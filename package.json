@@ -5,24 +5,32 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "dev:api": "tsx server/index.ts",
+    "build": "tsc && tsc -p tsconfig.server.json && vite build",
+    "typecheck:api": "tsc -p tsconfig.server.json",
     "preview": "vite preview"
   },
   "dependencies": {
-    "lucide-react": "^0.561.0",
-    "react": "^19.2.3",
-    "react-dom": "^19.2.3"
+    "@prisma/client": "^7.8.0",
+    "axios": "^1.16.1",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.5.2",
+    "lucide-react": "^1.16.0",
+    "openai": "^6.39.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.9.1",
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
+    "prisma": "^7.8.0",
+    "tsx": "^4.22.3",
     "typescript": "~6.0.2",
     "vite": "^8.0.12"
-  },
-  "dependencies": {
-    "lucide-react": "^1.16.0",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6"
   }
 }
