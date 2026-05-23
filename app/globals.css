@@ -233,6 +233,23 @@ p {
   white-space: pre-wrap;
 }
 
+.bubble-link {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-top: 6px;
+  padding: 8px 12px;
+  color: var(--primary);
+  background: rgba(181, 234, 215, 0.55);
+  border-radius: 999px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.bubble-link:hover {
+  background: rgba(181, 234, 215, 0.8);
+}
+
 .bubble-row.system .bubble {
   background: #fff0c7;
 }

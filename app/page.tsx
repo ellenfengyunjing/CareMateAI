@@ -420,8 +420,10 @@ export default function Home() {
       const results = data.results || []
       setTools((current) => {
         const used = new Set<string>()
+        const hasRouteCard = current.some((tool) => tool.name === 'route_to_clinic')
+        const hasRouteResult = results.some((result) => result.tool === 'route_to_clinic')
         const updated = current.map((tool) => {
-          const matched = results.find((r) => r.tool === tool.name && !used.has(r.tool))
+          const matched = findResultForTool(tool, results, used)
           if (matched) used.add(matched.tool)
           return matched
             ? {
@@ -432,6 +434,7 @@ export default function Home() {
             : tool
         })
         results.forEach((r) => {
+          if (r.tool === 'search_nearby_clinic' && (hasRouteCard || hasRouteResult)) return
           if (!current.some((t) => t.name === r.tool)) {
             updated.push({
               id: crypto.randomUUID(),
@@ -533,7 +536,9 @@ function AssistantPage(props: {
                 <Sparkles size={16} />
               </div>
             )}
-            <div className="bubble">{message.text}</div>
+            <div className="bubble">
+              <MessageText text={message.text} />
+            </div>
           </article>
         ))}
 
@@ -782,6 +787,24 @@ function SummaryRow({ icon, title, detail }: { icon: React.ReactNode; title: str
   )
 }
 
+function MessageText({ text }: { text: string }) {
+  const urlPattern = /(https?:\/\/[^\s]+)/g
+  const parts = text.split(urlPattern)
+  return (
+    <>
+      {parts.map((part, index) =>
+        part.match(urlPattern) ? (
+          <a className="bubble-link" href={part} target="_blank" rel="noreferrer" key={`${part}-${index}`}>
+            打开地图路线
+          </a>
+        ) : (
+          <span key={`${part}-${index}`}>{part}</span>
+        ),
+      )}
+    </>
+  )
+}
+
 function ContactRow({ name, relation, tone }: { name: string; relation: string; tone: 'pink' | 'green' | 'blue' }) {
   return (
     <div className="person-row">
@@ -937,7 +960,47 @@ function TextField({
   )
 }
 
+type RouteResultData = {
+  provider?: string
+  from?: string
+  to?: string
+  mode?: string
+  distanceMeters?: number
+  durationSeconds?: number
+  description?: string
+  selectedClinic?: {
+    name: string
+    address?: string
+    phone?: string
+    location?: { lat: number; lng: number }
+  }
+  alternatives?: Array<unknown>
+}
+
+type SearchClinicsData = {
+  clinics?: Array<{ name: string; address?: string; distanceMeters?: number }>
+}
+
+function findResultForTool(tool: ToolCard, results: ToolResult[], used: Set<string>) {
+  const direct = results.find((result) => result.tool === tool.name && !used.has(result.tool))
+  if (direct) return direct
+  if (tool.name === 'route_to_clinic') {
+    return results.find((result) => result.tool === 'search_nearby_clinic' && !used.has(result.tool))
+  }
+  return undefined
+}
+
 function buildExecutionSummary(results: ToolResult[], okCount: number) {
+  const route = results.find((result) => result.tool === 'route_to_clinic')
+  if (route?.success) return buildRouteSummary(route)
+
+  const failedRouteOrSearch = results.find(
+    (result) => !result.success && (result.tool === 'route_to_clinic' || result.tool === 'search_nearby_clinic'),
+  )
+  if (failedRouteOrSearch) {
+    return `路线工作流没有完成：${failedRouteOrSearch.message}`
+  }
+
   const failed = results.filter((result) => !result.success)
   const base = `执行完成（${okCount}/${results.length} 成功）。`
   if (!failed.length) return `${base} 任务结果已经更新在卡片里，请继续观察身体变化。`
@@ -946,10 +1009,36 @@ function buildExecutionSummary(results: ToolResult[], okCount: number) {
     .join('；')}`
 }
 
+function buildRouteSummary(result: ToolResult) {
+  const data = result.data as RouteResultData | undefined
+  const clinic = data?.selectedClinic
+  const mapUrl = buildTencentRouteUrl(data)
+  const lines = [
+    `已为你选出推荐路线：${clinic?.name || '附近医院'}`,
+    clinic?.address ? `地址：${clinic.address}` : '',
+    `路线：${data?.description || result.message}`,
+    mapUrl ? `打开腾讯地图：${mapUrl}` : '',
+  ].filter(Boolean)
+  return lines.join('\n')
+}
+
+function buildTencentRouteUrl(data: RouteResultData | undefined) {
+  const clinic = data?.selectedClinic
+  const location = clinic?.location
+  if (!clinic?.name || !location) return ''
+  const params = new URLSearchParams({
+    type: 'drive',
+    to: clinic.name,
+    tocoord: `${location.lat},${location.lng}`,
+    policy: '0',
+    referer: 'CareMate',
+  })
+  if (data?.from) params.set('from', data.from)
+  return `https://apis.map.qq.com/uri/v1/routeplan?${params.toString()}`
+}
+
 function formatToolResult(result: ToolResult) {
-  const data = result.data as
-    | { clinics?: Array<{ name: string; address?: string; distanceMeters?: number }>; description?: string; selectedClinic?: { name: string; address?: string }; durationSeconds?: number; distanceMeters?: number }
-    | undefined
+  const data = result.data as (SearchClinicsData & RouteResultData) | undefined
   if (result.tool === 'search_nearby_clinic' && data?.clinics?.length) {
     return `${result.message}：${data.clinics
       .slice(0, 2)
@@ -964,11 +1053,27 @@ function formatToolResult(result: ToolResult) {
 }
 
 function buildReadyTools(plan: HealthPlan): ToolCard[] {
-  return plan.suggestedTools.map<ToolCard>((tool) => ({
+  const requested = new Set<ToolName>(plan.suggestedTools)
+  if (requested.has('search_nearby_clinic') || requested.has('route_to_clinic')) {
+    requested.delete('search_nearby_clinic')
+    requested.add('route_to_clinic')
+  }
+  const ordered: ToolName[] = [
+    'create_todo_list',
+    'send_feishu_message',
+    'route_to_clinic',
+    'notify_emergency_contact',
+  ]
+  return ordered.filter((tool) => requested.has(tool)).map<ToolCard>((tool) => ({
     id: crypto.randomUUID(),
     name: tool,
     status: 'ready',
-    detail: tool === 'create_todo_list' ? '等待记录照护待办' : '等待你确认后执行',
+    detail:
+      tool === 'create_todo_list'
+        ? '等待记录照护待办'
+        : tool === 'route_to_clinic'
+          ? '等待搜索附近医院并规划推荐路线'
+          : '等待你确认后执行',
     tone: toolTone(tool),
   }))
 }
@@ -995,7 +1100,7 @@ function toolLabel(name: ToolName) {
     create_todo_list: '照护待办',
     send_feishu_message: '飞书通知：领导',
     search_nearby_clinic: '腾讯地图：附近医院',
-    route_to_clinic: '腾讯地图：路线规划',
+    route_to_clinic: '去医院推荐路线',
     notify_emergency_contact: '飞书通知：紧急联系人',
   }
   return labels[name]
@@ -1008,7 +1113,6 @@ function buildPlanMessage(plan: HealthPlan) {
     : '我先把照护待办记下来。'
   return `我判断你现在的风险是${risk}。${plan.summary}\n\n我建议：${plan.todos.join('、')}。\n${confirm}`
 }
-
 function floatTo16BitPcmBase64(float32Array: Float32Array) {
   const buffer = new ArrayBuffer(float32Array.length * 2)
   const view = new DataView(buffer)
