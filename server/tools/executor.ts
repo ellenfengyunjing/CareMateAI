@@ -104,7 +104,9 @@ export async function executeTool(name: string, rawArguments: unknown): Promise<
       }
     }
 
-    const user = await searchUserByName(args.receiver)
+    const user = args.receiver_open_id
+      ? { name: args.receiver, openId: args.receiver_open_id }
+      : await searchUserByName(args.receiver)
     const sent = await sendMessage(user.openId, args.message_text)
     return {
       id,

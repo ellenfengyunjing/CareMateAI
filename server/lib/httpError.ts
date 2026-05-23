@@ -26,8 +26,7 @@ export function toSafeError(error: unknown) {
     body: {
       success: false,
       error: 'INTERNAL_ERROR',
-      message: '服务暂时不可用，请稍后重试',
+      message: error instanceof Error ? error.message : '服务暂时不可用，请稍后重试',
     },
   }
 }
-

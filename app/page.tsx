@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   Bell,
@@ -42,6 +42,8 @@ type HealthPlan = {
   recommendedActions: string[]
   requiresConfirmation: boolean
   suggestedTools: string[]
+  assistantMessage: string
+  leaveMessageText: string | null
 }
 
 type ToolCard = {
@@ -69,9 +71,12 @@ export default function Home() {
   const [plan, setPlan] = useState<HealthPlan | null>(null)
   const [tools, setTools] = useState<ToolCard[]>([])
   const [awaitingConfirmation, setAwaitingConfirmation] = useState(false)
+  const [userName, setUserName] = useState('陈林夕')
   const [leaderName, setLeaderName] = useState('Ellen Feng')
-  const [homeAddress] = useState('深圳市南山区科技园')
-  const [emergencyPhone] = useState('13800000000')
+  const [leaderOpenId, setLeaderOpenId] = useState('')
+  const [homeAddress, setHomeAddress] = useState('深圳市南山区科技园')
+  const [emergencyContactName, setEmergencyContactName] = useState('Sarah Miller')
+  const [emergencyPhone, setEmergencyPhone] = useState('13800000000')
 
   const wsRef = useRef<WebSocket | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
@@ -79,6 +84,38 @@ export default function Home() {
   const processorRef = useRef<ScriptProcessorNode | null>(null)
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
   const currentAiMessageIdRef = useRef<string | null>(null)
+
+  const userSettings = useMemo(
+    () => ({
+      userName,
+      leaderName,
+      leaderOpenId,
+      homeAddress,
+      emergencyContactName,
+      emergencyPhone,
+    }),
+    [emergencyContactName, emergencyPhone, homeAddress, leaderName, leaderOpenId, userName],
+  )
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem('caremate-settings')
+    if (!saved) return
+    try {
+      const parsed = JSON.parse(saved)
+      if (parsed.userName) setUserName(parsed.userName)
+      if (parsed.leaderName) setLeaderName(parsed.leaderName)
+      if (parsed.leaderOpenId) setLeaderOpenId(parsed.leaderOpenId)
+      if (parsed.homeAddress) setHomeAddress(parsed.homeAddress)
+      if (parsed.emergencyContactName) setEmergencyContactName(parsed.emergencyContactName)
+      if (parsed.emergencyPhone) setEmergencyPhone(parsed.emergencyPhone)
+    } catch {
+      window.localStorage.removeItem('caremate-settings')
+    }
+  }, [])
+
+  useEffect(() => {
+    window.localStorage.setItem('caremate-settings', JSON.stringify(userSettings))
+  }, [userSettings])
 
   const statusText = useMemo(() => {
     if (recording) return '正在倾听...'
@@ -186,14 +223,14 @@ export default function Home() {
     const response = await fetch('/api/agent/plan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: normalized }),
+      body: JSON.stringify({ text: normalized, settings: userSettings }),
     })
     const data = await response.json()
     const nextPlan = data.plan as HealthPlan
     setPlan(nextPlan)
     setAwaitingConfirmation(nextPlan.requiresConfirmation)
     setTools(buildReadyTools(nextPlan))
-    addMessage('ai', buildPlanMessage(nextPlan))
+    addMessage('ai', nextPlan.assistantMessage || buildPlanMessage(nextPlan))
   }
 
   const executePlan = async (targetPlan: HealthPlan) => {
@@ -206,9 +243,7 @@ export default function Home() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         plan: targetPlan,
-        leaderName,
-        homeAddress,
-        emergencyPhone,
+        settings: userSettings,
       }),
     })
     const data = await response.json()
@@ -262,7 +297,20 @@ export default function Home() {
           onConfirm={() => plan && void executePlan(plan)}
         />
       ) : (
-        <SettingsPage leaderName={leaderName} onLeaderChange={setLeaderName} />
+        <SettingsPage
+          userName={userName}
+          leaderName={leaderName}
+          leaderOpenId={leaderOpenId}
+          homeAddress={homeAddress}
+          emergencyContactName={emergencyContactName}
+          emergencyPhone={emergencyPhone}
+          onUserNameChange={setUserName}
+          onLeaderChange={setLeaderName}
+          onLeaderOpenIdChange={setLeaderOpenId}
+          onHomeAddressChange={setHomeAddress}
+          onEmergencyContactNameChange={setEmergencyContactName}
+          onEmergencyPhoneChange={setEmergencyPhone}
+        />
       )}
 
       <BottomNav page={page} onChange={setPage} />
@@ -379,7 +427,20 @@ function ToolActionCard({ tool }: { tool: ToolCard }) {
   )
 }
 
-function SettingsPage(props: { leaderName: string; onLeaderChange: (value: string) => void }) {
+function SettingsPage(props: {
+  userName: string
+  leaderName: string
+  leaderOpenId: string
+  homeAddress: string
+  emergencyContactName: string
+  emergencyPhone: string
+  onUserNameChange: (value: string) => void
+  onLeaderChange: (value: string) => void
+  onLeaderOpenIdChange: (value: string) => void
+  onHomeAddressChange: (value: string) => void
+  onEmergencyContactNameChange: (value: string) => void
+  onEmergencyPhoneChange: (value: string) => void
+}) {
   return (
     <>
       <header className="top-bar">
@@ -394,13 +455,21 @@ function SettingsPage(props: { leaderName: string; onLeaderChange: (value: strin
 
       <section className="profile">
         <div className="profile-photo">陈</div>
-        <h2>陈林夕</h2>
+        <h2>{props.userName}</h2>
         <p>独居 · 深圳南山 · 青霉素过敏</p>
       </section>
 
       <SettingsGroup title="紧急联系人" icon={<Heart size={18} />} action="添加">
-        <PersonRow name="Sarah Miller" desc="配偶 (Spouse)" tone="blue" />
+        <PersonRow name={props.emergencyContactName} desc={props.emergencyPhone} tone="blue" />
         <PersonRow name="Dr. James Wong" desc="私人医生" tone="orange" />
+        <label className="leader-field">
+          紧急联系人姓名
+          <input value={props.emergencyContactName} onChange={(event) => props.onEmergencyContactNameChange(event.target.value)} />
+        </label>
+        <label className="leader-field">
+          紧急联系人电话
+          <input value={props.emergencyPhone} onChange={(event) => props.onEmergencyPhoneChange(event.target.value)} />
+        </label>
       </SettingsGroup>
 
       <SettingsGroup title="AI Agent模式" icon={<Sparkles size={18} />}>
@@ -424,8 +493,20 @@ function SettingsPage(props: { leaderName: string; onLeaderChange: (value: strin
         <PermissionRow title="自动打车" desc="根据身体情况安排去附近医院" checked />
         <PermissionRow title="自动发消息" desc="确认后发消息给领导或紧急联系人" checked />
         <label className="leader-field">
+          用户姓名
+          <input value={props.userName} onChange={(event) => props.onUserNameChange(event.target.value)} />
+        </label>
+        <label className="leader-field">
           默认领导
           <input value={props.leaderName} onChange={(event) => props.onLeaderChange(event.target.value)} />
+        </label>
+        <label className="leader-field">
+          领导飞书 open_id（可选）
+          <input value={props.leaderOpenId} onChange={(event) => props.onLeaderOpenIdChange(event.target.value)} placeholder="ou_xxx" />
+        </label>
+        <label className="leader-field">
+          家庭住址
+          <input value={props.homeAddress} onChange={(event) => props.onHomeAddressChange(event.target.value)} />
         </label>
       </SettingsGroup>
     </>

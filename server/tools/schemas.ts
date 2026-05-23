@@ -12,6 +12,7 @@ export type AgentIntent = z.infer<typeof intentSchema>
 export const sendFeishuMessageSchema = z.object({
   receiver: z.string().min(1),
   message_text: z.string().min(1),
+  receiver_open_id: z.string().optional(),
 })
 
 export const sendSmsEmergencySchema = z.object({

@@ -8,6 +8,8 @@ export const healthPlanSchema = z.object({
   recommendedActions: z.array(z.string()),
   requiresConfirmation: z.boolean(),
   suggestedTools: z.array(z.string()),
+  assistantMessage: z.string(),
+  leaveMessageText: z.string().nullable(),
 })
 
 export type HealthPlan = z.infer<typeof healthPlanSchema>
@@ -17,9 +19,16 @@ export function createLocalHealthPlan(text: string): HealthPlan {
   const hasEmergency = /胸痛|呼吸困难|喘不上|意识|晕倒|昏迷|急救|120/.test(text)
   const hasHighFever = /39|四十|40|高烧/.test(text)
   const hasDizzy = /头晕|晕|乏力|没力气/.test(text)
+  const hasDigestive = /腹泻|拉肚子|呕吐|吐|肚子疼|胃痛/.test(text)
+  const hasCold = /感冒|咳嗽|嗓子|流鼻涕|鼻塞/.test(text)
 
   const intent = hasEmergency ? 'emergency' : hasCompany ? 'leave_request' : 'health_check'
-  const severity = hasEmergency || (hasHighFever && hasDizzy) ? 'high' : hasHighFever || hasDizzy ? 'medium' : 'low'
+  const severity =
+    hasEmergency || (hasHighFever && hasDizzy)
+      ? 'high'
+      : hasHighFever || hasDizzy || hasDigestive
+        ? 'medium'
+        : 'low'
   const todos = ['先坐下或躺下休息', '少量多次补水', '持续观察体温']
   const suggestedTools = ['create_todo_list']
   const recommendedActions = ['建议今天减少活动，避免独自外出']
@@ -28,6 +37,17 @@ export function createLocalHealthPlan(text: string): HealthPlan {
     todos.unshift('向领导发送病假说明')
     suggestedTools.push('send_feishu_message')
     recommendedActions.push('我可以帮你给领导发一条自然的飞书请假消息')
+  }
+
+  if (hasDigestive) {
+    todos.push('避免油腻食物，观察是否有脱水迹象')
+    recommendedActions.push('腹泻期间注意补液；如果持续高烧、血便或明显脱水，建议及时就医')
+  }
+
+  if (hasCold) {
+    todos.push('根据症状准备感冒药或退烧药')
+    suggestedTools.push('order_medicine')
+    recommendedActions.push('如果是普通感冒症状，可以考虑线上买药到家并休息观察')
   }
 
   if (severity === 'high') {
@@ -46,5 +66,9 @@ export function createLocalHealthPlan(text: string): HealthPlan {
     recommendedActions,
     requiresConfirmation: suggestedTools.some((tool) => tool !== 'create_todo_list'),
     suggestedTools,
+    assistantMessage: `${hasHighFever ? '我判断你现在发烧偏高，需要先休息并减少活动。' : '我先帮你把情况整理一下。'}${hasCompany ? '如果你确认，我可以帮你给领导发飞书请假。' : ''}`,
+    leaveMessageText: hasCompany
+      ? `我今天身体不太舒服（${text}），状态不太适合到公司，想先请一天病假休息观察一下。手头紧急事项我会尽量线上同步，如果有特别急的事情可以电话联系我。谢谢理解。`
+      : null,
   }
 }
