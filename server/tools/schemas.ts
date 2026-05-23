@@ -24,7 +24,17 @@ export const createTodoListSchema = z.object({
   intent: intentSchema.optional(),
 })
 
-export type ToolName = 'send_feishu_message' | 'send_sms_emergency' | 'create_todo_list'
+export const searchNearbyClinicSchema = z.object({
+  location: z.string().min(1),
+  severity: z.enum(['low', 'medium', 'high']),
+  symptom_summary: z.string().min(1),
+})
+
+export type ToolName =
+  | 'send_feishu_message'
+  | 'send_sms_emergency'
+  | 'create_todo_list'
+  | 'search_nearby_clinic'
 
 export const realtimeTools = [
   {
@@ -104,5 +114,28 @@ export const realtimeTools = [
       required: ['todos', 'intent'],
     },
   },
+  {
+    type: 'function',
+    name: 'search_nearby_clinic',
+    description: '搜索附近社康、医院和路线。用户病情中高风险或确认就医时调用。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        location: {
+          type: 'string',
+          description: '用户当前位置或家庭地址。',
+        },
+        severity: {
+          type: 'string',
+          enum: ['low', 'medium', 'high'],
+        },
+        symptom_summary: {
+          type: 'string',
+          description: '用户症状摘要。',
+        },
+      },
+      required: ['location', 'severity', 'symptom_summary'],
+    },
+  },
 ] as const
-

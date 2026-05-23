@@ -4,6 +4,7 @@ import { env } from '../config/env.js'
 import { searchUserByName, sendMessage } from '../feishu/client.js'
 import {
   createTodoListSchema,
+  searchNearbyClinicSchema,
   sendFeishuMessageSchema,
   sendSmsEmergencySchema,
   type ToolName,
@@ -55,6 +56,35 @@ export async function executeTool(name: string, rawArguments: unknown): Promise<
       tool: name,
       success: false,
       message: '真实短信供应商尚未配置，已阻止发送',
+    }
+  }
+
+  if (name === 'search_nearby_clinic') {
+    const args = searchNearbyClinicSchema.parse(rawArguments)
+    return {
+      id,
+      tool: name,
+      success: true,
+      message: '已找到附近社康和推荐路线',
+      data: {
+        provider: 'amap-mock',
+        location: args.location,
+        severity: args.severity,
+        options: [
+          {
+            name: '南山社区健康服务中心',
+            distance: '1.2km',
+            route: '步行 14 分钟 / 打车 6 分钟',
+            available: '今天 16:30 可预约全科',
+          },
+          {
+            name: '深圳大学总医院',
+            distance: '4.8km',
+            route: '打车 18 分钟',
+            available: '急诊 24 小时',
+          },
+        ],
+      },
     }
   }
 
@@ -114,4 +144,3 @@ function maskPhone(phone: string) {
   if (phone.length < 7) return phone
   return `${phone.slice(0, 3)}****${phone.slice(-4)}`
 }
-

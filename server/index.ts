@@ -4,6 +4,7 @@ import rateLimit from 'express-rate-limit'
 import { env } from './config/env.js'
 import { leaveRouter } from './api/leave.js'
 import { toolsRouter } from './api/tools.js'
+import { agentRouter } from './api/agent.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { attachRealtimeServer } from './realtime/server.js'
 
@@ -32,6 +33,7 @@ app.get('/api/health', (_req, res) => {
 
 app.use('/api/leave', leaveRouter)
 app.use('/api/tools', toolsRouter)
+app.use('/api/agent', agentRouter)
 app.use(errorHandler)
 
 attachRealtimeServer(server)
