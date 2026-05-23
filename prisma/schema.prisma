@@ -1,0 +1,55 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id             String            @id @default(cuid())
+  name           String
+  phone          String?
+  homeAddress    String?
+  healthProfile  Json?
+  leaderConfigs  LeaderConfig[]
+  leaveLogs      LeaveMessageLog[]
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+}
+
+model LeaderConfig {
+  id          String   @id @default(cuid())
+  userId      String
+  leaderName  String
+  openId      String?
+  platform    String   @default("feishu")
+  isDefault   Boolean  @default(false)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+  @@index([leaderName])
+}
+
+model LeaveMessageLog {
+  id              String   @id @default(cuid())
+  userId          String?
+  leaderName      String
+  leaderOpenId    String
+  symptom         String
+  severity        String
+  generatedText   String
+  feishuMessageId String?
+  sendStatus      String
+  errorMessage    String?
+  leaderReply     String?
+  user            User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userId])
+  @@index([leaderOpenId])
+  @@index([createdAt])
+}
