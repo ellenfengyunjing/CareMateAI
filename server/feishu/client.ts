@@ -79,12 +79,12 @@ export async function getTenantAccessToken(): Promise<string> {
     return tenantTokenCache.token
   }
 
-  const response = await requestWithRetry<
-    FeishuResponse<{
-      tenant_access_token: string
-      expire: number
-    }>
-  >({
+  const response = await requestWithRetry<{
+    code: number
+    msg?: string
+    tenant_access_token?: string
+    expire?: number
+  }>({
     method: 'POST',
     url: '/auth/v3/tenant_access_token/internal',
     data: {
@@ -93,10 +93,17 @@ export async function getTenantAccessToken(): Promise<string> {
     },
   })
 
-  const data = assertFeishuSuccess(response, '获取飞书 tenant_access_token')
+  if (response.code !== 0 || !response.tenant_access_token || !response.expire) {
+    throw new AppError(
+      502,
+      'FEISHU_TOKEN_ERROR',
+      `获取飞书 tenant_access_token 失败：${response.msg || response.code}`,
+    )
+  }
+
   tenantTokenCache = {
-    token: data.tenant_access_token,
-    expiresAt: Date.now() + data.expire * 1000,
+    token: response.tenant_access_token,
+    expiresAt: Date.now() + response.expire * 1000,
   }
 
   return tenantTokenCache.token
