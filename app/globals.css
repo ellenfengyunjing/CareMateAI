@@ -1,0 +1,394 @@
+:root {
+  --ink: #20312d;
+  --muted: #687872;
+  --line: rgba(56, 85, 76, 0.16);
+  --surface: rgba(255, 255, 255, 0.84);
+  --surface-strong: #ffffff;
+  --mint: #99d9bf;
+  --sage: #2f705f;
+  --rose: #e8a7a0;
+  --amber: #e7bd69;
+  --shadow: 0 22px 80px rgba(57, 76, 70, 0.16);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background:
+    linear-gradient(135deg, rgba(153, 217, 191, 0.34), transparent 35%),
+    linear-gradient(225deg, rgba(232, 167, 160, 0.28), transparent 34%),
+    #f5f2ea;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  border: 0;
+  cursor: pointer;
+}
+
+.app-shell {
+  min-height: 100vh;
+  padding: 20px;
+}
+
+.hero-panel,
+.workspace {
+  max-width: 1380px;
+  margin: 0 auto;
+}
+
+.hero-panel {
+  display: grid;
+  grid-template-columns: 1fr minmax(280px, 540px) auto;
+  gap: 20px;
+  align-items: center;
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: var(--shadow);
+}
+
+.brand-block,
+.status-strip,
+.pane-header,
+.panel-title,
+.composer,
+.message,
+.toggle-row {
+  display: flex;
+  align-items: center;
+}
+
+.brand-block {
+  gap: 14px;
+}
+
+.brand-mark,
+.message-icon {
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+}
+
+.brand-mark {
+  width: 54px;
+  height: 54px;
+  color: #1d5e4b;
+  background: linear-gradient(145deg, #dff6ed, #fff7ea);
+  border: 1px solid rgba(57, 112, 94, 0.16);
+}
+
+.eyebrow,
+.muted {
+  color: var(--muted);
+}
+
+.eyebrow {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 30px;
+  line-height: 1.08;
+}
+
+h2 {
+  font-size: 20px;
+}
+
+h3 {
+  font-size: 15px;
+}
+
+.hero-copy {
+  color: #596a64;
+  line-height: 1.6;
+}
+
+.status-strip {
+  gap: 9px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.status-strip span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: #31574c;
+  background: rgba(153, 217, 191, 0.24);
+  border: 1px solid rgba(79, 128, 111, 0.14);
+  font-size: 13px;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(340px, 0.8fr);
+  gap: 18px;
+}
+
+.chat-pane,
+.settings-pane {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(18px);
+}
+
+.chat-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 136px);
+  overflow: hidden;
+}
+
+.pane-header {
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.voice-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 92px;
+  height: 44px;
+  padding: 0 14px;
+  border-radius: 8px;
+  color: white;
+  background: #2d705e;
+}
+
+.voice-button.recording {
+  background: #a94f4c;
+}
+
+.chat-scroll {
+  flex: 1;
+  padding: 18px;
+  overflow: auto;
+}
+
+.message {
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.message.user {
+  flex-direction: row-reverse;
+}
+
+.message-icon {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  color: #285d50;
+  background: #e6f3ee;
+}
+
+.message p {
+  max-width: min(720px, 82%);
+  padding: 14px 15px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-strong);
+  color: #40504b;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.message.user p {
+  background: #e6f3ee;
+}
+
+.message.system p {
+  background: #fff0c7;
+}
+
+.composer {
+  gap: 10px;
+  padding: 14px 18px 18px;
+  border-top: 1px solid var(--line);
+}
+
+input {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid rgba(65, 90, 82, 0.2);
+  border-radius: 8px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.9);
+  outline: none;
+}
+
+input:focus {
+  border-color: #75b59f;
+  box-shadow: 0 0 0 3px rgba(117, 181, 159, 0.22);
+}
+
+.send-button {
+  display: grid;
+  place-items: center;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  color: white;
+  background: #2d705e;
+}
+
+.settings-pane {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  padding: 16px;
+}
+
+.panel {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.panel-title {
+  gap: 8px;
+  margin-bottom: 12px;
+  color: #315e52;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  color: #4b5b56;
+  font-size: 13px;
+}
+
+.toggle-row {
+  grid-template-columns: 1fr auto;
+}
+
+.toggle-row input {
+  width: 18px;
+  min-height: 18px;
+  accent-color: #2d705e;
+}
+
+.intent-card strong,
+.intent-card p {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.intent-card ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #4a5b55;
+}
+
+.tool-list,
+.debug-list {
+  display: grid;
+  gap: 8px;
+}
+
+.tool-item {
+  padding: 10px;
+  border-radius: 8px;
+  background: #f5f7f6;
+  border: 1px solid var(--line);
+}
+
+.tool-item strong,
+.tool-item span {
+  display: inline-block;
+  margin-right: 8px;
+}
+
+.tool-item span {
+  color: #6b7873;
+  font-size: 12px;
+}
+
+.tool-item.success {
+  background: #e8f6ef;
+}
+
+.tool-item.failed {
+  background: #fff0ee;
+}
+
+.tool-item p {
+  margin-top: 8px;
+  color: #52615c;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.debug-list code {
+  padding: 7px 8px;
+  border-radius: 6px;
+  color: #495750;
+  background: #eef3f1;
+  font-size: 12px;
+}
+
+@media (max-width: 1080px) {
+  .hero-panel,
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .status-strip {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 680px) {
+  .app-shell {
+    padding: 10px;
+  }
+
+  .hero-panel,
+  .pane-header,
+  .composer,
+  .settings-pane {
+    padding: 14px;
+  }
+
+  h1 {
+    font-size: 24px;
+  }
+
+  .message p {
+    max-width: 100%;
+  }
+}
+
