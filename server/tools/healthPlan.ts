@@ -7,7 +7,15 @@ export const healthPlanSchema = z.object({
   todos: z.array(z.string()),
   recommendedActions: z.array(z.string()),
   requiresConfirmation: z.boolean(),
-  suggestedTools: z.array(z.string()),
+  suggestedTools: z.array(
+    z.enum([
+      'create_todo_list',
+      'send_feishu_message',
+      'notify_emergency_contact',
+      'search_nearby_clinic',
+      'route_to_clinic',
+    ]),
+  ),
   assistantMessage: z.string(),
   leaveMessageText: z.string().nullable(),
 })
@@ -22,15 +30,20 @@ export function createLocalHealthPlan(text: string): HealthPlan {
   const hasDigestive = /腹泻|拉肚子|呕吐|吐|肚子疼|胃痛/.test(text)
   const hasCold = /感冒|咳嗽|嗓子|流鼻涕|鼻塞/.test(text)
 
-  const intent = hasEmergency ? 'emergency' : hasCompany ? 'leave_request' : 'health_check'
-  const severity =
+  const intent: HealthPlan['intent'] = hasEmergency
+    ? 'emergency'
+    : hasCompany
+      ? 'leave_request'
+      : 'health_check'
+  const severity: HealthPlan['severity'] =
     hasEmergency || (hasHighFever && hasDizzy)
       ? 'high'
       : hasHighFever || hasDizzy || hasDigestive
         ? 'medium'
         : 'low'
+
   const todos = ['先坐下或躺下休息', '少量多次补水', '持续观察体温']
-  const suggestedTools = ['create_todo_list']
+  const suggestedTools: HealthPlan['suggestedTools'] = ['create_todo_list']
   const recommendedActions = ['建议今天减少活动，避免独自外出']
 
   if (hasCompany) {
@@ -46,14 +59,17 @@ export function createLocalHealthPlan(text: string): HealthPlan {
 
   if (hasCold) {
     todos.push('根据症状准备感冒药或退烧药')
-    suggestedTools.push('order_medicine')
     recommendedActions.push('如果是普通感冒症状，可以考虑线上买药到家并休息观察')
   }
 
-  if (severity === 'high') {
+  if (severity === 'high' || hasEmergency) {
     todos.push('搜索附近社康/医院路线')
     suggestedTools.push('search_nearby_clinic')
+    suggestedTools.push('notify_emergency_contact')
     recommendedActions.push('建议尽快就近就医；如果出现胸痛、呼吸困难或意识不清，请立即联系急救')
+  } else if (severity === 'medium') {
+    suggestedTools.push('search_nearby_clinic')
+    recommendedActions.push('如果症状没有缓解，可以去附近社康看一下')
   }
 
   return {

@@ -5,23 +5,26 @@ import {
   ArrowLeft,
   Bell,
   BriefcaseBusiness,
-  Car,
   CheckCircle2,
-  ChevronRight,
+  Edit3,
   Heart,
   HeartPulse,
   House,
+  KeyRound,
   Link2,
   MapPinned,
   Mic,
   MicOff,
-  Pill,
+  Phone,
   PlusCircle,
+  RotateCcw,
+  Save,
   Send,
   Settings,
   ShieldCheck,
   Sparkles,
   Stethoscope,
+  UserPlus,
   UserRound,
 } from 'lucide-react'
 
@@ -34,6 +37,13 @@ type ChatMessage = {
   text: string
 }
 
+type ToolName =
+  | 'create_todo_list'
+  | 'send_feishu_message'
+  | 'notify_emergency_contact'
+  | 'search_nearby_clinic'
+  | 'route_to_clinic'
+
 type HealthPlan = {
   intent: 'health_check' | 'leave_request' | 'emergency' | 'daily_help'
   severity: 'low' | 'medium' | 'high'
@@ -41,42 +51,93 @@ type HealthPlan = {
   todos: string[]
   recommendedActions: string[]
   requiresConfirmation: boolean
-  suggestedTools: string[]
+  suggestedTools: ToolName[]
   assistantMessage: string
   leaveMessageText: string | null
 }
 
+type ToolResult = {
+  tool: ToolName
+  success: boolean
+  message: string
+  data?: unknown
+}
+
 type ToolCard = {
   id: string
-  name: string
+  name: ToolName
   detail: string
   status: 'ready' | 'running' | 'done' | 'failed'
-  tone: 'blue' | 'green' | 'orange' | 'pink'
+  tone: 'blue' | 'green' | 'orange' | 'pink' | 'yellow'
 }
+
+type UserSettings = {
+  userName: string
+  leaderName: string
+  leaderOpenId: string
+  leaderUserId: string
+  leaderMobile: string
+  leaderEmail: string
+  feishuAppId: string
+  feishuAppSecret: string
+  homeAddress: string
+  emergencyContactName: string
+  emergencyContactFeishuName: string
+  emergencyPhone: string
+  emergencyOpenId: string
+  emergencyUserId: string
+  emergencyEmail: string
+  allergies: string
+  medicalNotes: string
+  tencentMapKey: string
+  autoRide: boolean
+  autoMessage: boolean
+}
+
+const DEFAULT_SETTINGS: UserSettings = {
+  userName: '',
+  leaderName: '',
+  leaderOpenId: '',
+  leaderUserId: '',
+  leaderMobile: '',
+  leaderEmail: '',
+  feishuAppId: '',
+  feishuAppSecret: '',
+  homeAddress: '',
+  emergencyContactName: '',
+  emergencyContactFeishuName: '',
+  emergencyPhone: '',
+  emergencyOpenId: '',
+  emergencyUserId: '',
+  emergencyEmail: '',
+  allergies: '',
+  medicalNotes: '',
+  tencentMapKey: '',
+  autoRide: true,
+  autoMessage: true,
+}
+
+const SETTINGS_KEY = 'caremate-settings'
+const CHAT_KEY = 'caremate-chat'
 
 const initialMessages: ChatMessage[] = [
   {
     id: 'welcome',
     role: 'ai',
-    text: '安安在听。你不用操作手机，直接告诉我哪里不舒服，我会先判断情况，再把建议和可执行事项告诉你。',
+    text: '安安在听。直接告诉我哪里不舒服，我会先了解情况，再把建议和可执行事项告诉你。',
   },
 ]
 
 export default function Home() {
   const [page, setPage] = useState<Page>('assistant')
-  const [listening, setListening] = useState(true)
   const [recording, setRecording] = useState(false)
-  const [inputText, setInputText] = useState('我发烧39度，有点头晕，今天可能去不了公司')
+  const [inputText, setInputText] = useState('')
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages)
   const [plan, setPlan] = useState<HealthPlan | null>(null)
   const [tools, setTools] = useState<ToolCard[]>([])
   const [awaitingConfirmation, setAwaitingConfirmation] = useState(false)
-  const [userName, setUserName] = useState('陈林夕')
-  const [leaderName, setLeaderName] = useState('Ellen Feng')
-  const [leaderOpenId, setLeaderOpenId] = useState('')
-  const [homeAddress, setHomeAddress] = useState('深圳市南山区科技园')
-  const [emergencyContactName, setEmergencyContactName] = useState('Sarah Miller')
-  const [emergencyPhone, setEmergencyPhone] = useState('13800000000')
+  const [thinking, setThinking] = useState(false)
+  const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS)
 
   const wsRef = useRef<WebSocket | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
@@ -84,46 +145,106 @@ export default function Home() {
   const processorRef = useRef<ScriptProcessorNode | null>(null)
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
   const currentAiMessageIdRef = useRef<string | null>(null)
-
-  const userSettings = useMemo(
-    () => ({
-      userName,
-      leaderName,
-      leaderOpenId,
-      homeAddress,
-      emergencyContactName,
-      emergencyPhone,
-    }),
-    [emergencyContactName, emergencyPhone, homeAddress, leaderName, leaderOpenId, userName],
-  )
+  const hydratedRef = useRef(false)
 
   useEffect(() => {
-    const saved = window.localStorage.getItem('caremate-settings')
-    if (!saved) return
-    try {
-      const parsed = JSON.parse(saved)
-      if (parsed.userName) setUserName(parsed.userName)
-      if (parsed.leaderName) setLeaderName(parsed.leaderName)
-      if (parsed.leaderOpenId) setLeaderOpenId(parsed.leaderOpenId)
-      if (parsed.homeAddress) setHomeAddress(parsed.homeAddress)
-      if (parsed.emergencyContactName) setEmergencyContactName(parsed.emergencyContactName)
-      if (parsed.emergencyPhone) setEmergencyPhone(parsed.emergencyPhone)
-    } catch {
-      window.localStorage.removeItem('caremate-settings')
+    let mounted = true
+    const loadSettings = async () => {
+      try {
+        const savedSettings = window.localStorage.getItem(SETTINGS_KEY)
+        if (savedSettings) {
+          const parsed = JSON.parse(savedSettings) as Partial<UserSettings>
+          if (mounted) setSettings({ ...DEFAULT_SETTINGS, ...parsed })
+        }
+        const response = await fetch('/api/settings')
+        if (response.ok) {
+          const data = (await response.json()) as { settings?: Partial<UserSettings> }
+          if (data.settings && mounted) setSettings({ ...DEFAULT_SETTINGS, ...data.settings })
+        }
+        const savedChat = window.localStorage.getItem(CHAT_KEY)
+        if (savedChat) {
+          const parsed = JSON.parse(savedChat) as {
+            messages?: ChatMessage[]
+            plan?: HealthPlan | null
+            tools?: ToolCard[]
+            awaitingConfirmation?: boolean
+          }
+          if (parsed.messages?.length) setMessages(parsed.messages)
+          if (parsed.plan) setPlan(parsed.plan)
+          if (parsed.tools) setTools(parsed.tools)
+          if (typeof parsed.awaitingConfirmation === 'boolean') setAwaitingConfirmation(parsed.awaitingConfirmation)
+          else if (parsed.plan?.requiresConfirmation && parsed.tools?.some((tool) => tool.status === 'ready')) setAwaitingConfirmation(true)
+        }
+      } catch {
+        window.localStorage.removeItem(SETTINGS_KEY)
+        window.localStorage.removeItem(CHAT_KEY)
+      } finally {
+        hydratedRef.current = true
+      }
+    }
+    void loadSettings()
+    return () => {
+      mounted = false
     }
   }, [])
 
   useEffect(() => {
-    window.localStorage.setItem('caremate-settings', JSON.stringify(userSettings))
-  }, [userSettings])
+    if (!hydratedRef.current) return
+    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
+    const timeout = window.setTimeout(() => {
+      void fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      })
+    }, 400)
+    return () => window.clearTimeout(timeout)
+  }, [settings])
+
+  useEffect(() => {
+    if (!hydratedRef.current) return
+    window.localStorage.setItem(CHAT_KEY, JSON.stringify({ messages, plan, tools, awaitingConfirmation }))
+  }, [messages, plan, tools, awaitingConfirmation])
 
   const statusText = useMemo(() => {
     if (recording) return '正在倾听...'
+    if (thinking) return '安安在思考...'
     if (awaitingConfirmation) return '等待你确认执行'
     if (tools.some((tool) => tool.status === 'running')) return '正在替你处理'
-    return '语音模式已开启'
-  }, [awaitingConfirmation, recording, tools])
+    return '随时和我说话'
+  }, [awaitingConfirmation, recording, thinking, tools])
 
+  const updateSetting = <K extends keyof UserSettings>(key: K, value: UserSettings[K]) => {
+    setSettings((current) => ({ ...current, [key]: value }))
+  }
+
+  const addMessage = (role: Role, text: string) => {
+    setMessages((current) => [...current, { id: crypto.randomUUID(), role, text }])
+  }
+
+  const appendAiDelta = (text: string) => {
+    setMessages((current) => {
+      const id = currentAiMessageIdRef.current
+      if (id) {
+        return current.map((message) =>
+          message.id === id ? { ...message, text: `${message.text}${text}` } : message,
+        )
+      }
+      const nextId = crypto.randomUUID()
+      currentAiMessageIdRef.current = nextId
+      return [...current, { id: nextId, role: 'ai', text }]
+    })
+  }
+
+  const clearChat = () => {
+    setMessages(initialMessages)
+    setPlan(null)
+    setTools([])
+    setAwaitingConfirmation(false)
+    currentAiMessageIdRef.current = null
+  }
+
+  // PLACEHOLDER_HOME_BODY removed
   const connectRealtime = () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
     const ws = new WebSocket(`ws://${window.location.hostname}:8787/ws/realtime`)
@@ -133,8 +254,18 @@ export default function Home() {
       ws.send(
         JSON.stringify({
           type: 'session.start',
-          leaderName,
-          emergencyPhone,
+          leaderName: settings.leaderName,
+          leaderOpenId: settings.leaderOpenId,
+          leaderUserId: settings.leaderUserId,
+          leaderMobile: settings.leaderMobile,
+          leaderEmail: settings.leaderEmail,
+          emergencyContactFeishuName: settings.emergencyContactFeishuName,
+          emergencyPhone: settings.emergencyPhone,
+          emergencyOpenId: settings.emergencyOpenId,
+          emergencyUserId: settings.emergencyUserId,
+          emergencyEmail: settings.emergencyEmail,
+          feishuAppId: settings.feishuAppId,
+          feishuAppSecret: settings.feishuAppSecret,
           debug: false,
         }),
       )
@@ -152,7 +283,7 @@ export default function Home() {
         currentAiMessageIdRef.current = null
       }
       if (data.type === 'error') {
-        addMessage('system', '实时语音暂时连不上，我会先用本地 Agent 流程继续帮你处理。')
+        addMessage('system', '实时语音暂时连不上，可以直接用下方文字框跟我聊。')
       }
     }
   }
@@ -164,15 +295,10 @@ export default function Home() {
     }
 
     connectRealtime()
-    setListening(true)
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       })
       const audioContext = new AudioContext({ sampleRate: 24000 })
       const source = audioContext.createMediaStreamSource(stream)
@@ -197,7 +323,7 @@ export default function Home() {
       processorRef.current = processor
       setRecording(true)
     } catch {
-      addMessage('system', '没有拿到麦克风权限。你也可以先用下方测试输入模拟语音。')
+      addMessage('system', '没有拿到麦克风权限。可以直接用下方文字框跟我聊。')
     }
   }
 
@@ -212,25 +338,60 @@ export default function Home() {
   const handleUserText = async (text: string) => {
     const normalized = text.trim()
     if (!normalized) return
+    setInputText('')
 
-    addMessage('user', normalized)
-
-    if (/确认|可以|执行|发送|帮我发|就这样/.test(normalized) && plan && awaitingConfirmation) {
+    if (
+      plan &&
+      awaitingConfirmation &&
+      /确认|可以|执行|发送|帮我发|就这样|好的|去吧/.test(normalized)
+    ) {
+      addMessage('user', normalized)
       await executePlan(plan)
       return
     }
 
-    const response = await fetch('/api/agent/plan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: normalized, settings: userSettings }),
-    })
-    const data = await response.json()
-    const nextPlan = data.plan as HealthPlan
-    setPlan(nextPlan)
-    setAwaitingConfirmation(nextPlan.requiresConfirmation)
-    setTools(buildReadyTools(nextPlan))
-    addMessage('ai', nextPlan.assistantMessage || buildPlanMessage(nextPlan))
+    const baseMessages = messages
+      .filter((m) => (m.role === 'user' || m.role === 'ai') && !m.text.startsWith('我收到了，正在结合你的档案分析'))
+      .map((m) => ({
+        role: m.role === 'ai' ? ('assistant' as const) : ('user' as const),
+        content: m.text,
+      }))
+    addMessage('user', normalized)
+    addMessage('ai', '我收到了，正在结合你的档案分析症状和下一步安排。')
+    const chatHistory = [...baseMessages, { role: 'user' as const, content: normalized }]
+
+    setThinking(true)
+    try {
+      const response = await fetch('/api/agent/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: chatHistory, settings }),
+      })
+      if (!response.ok) {
+        const err = (await response.json().catch(() => ({}))) as { message?: string }
+        addMessage('system', `安安暂时不在线：${err.message || response.statusText}`)
+        return
+      }
+      const data = (await response.json()) as
+        | { kind: 'message'; text: string }
+        | { kind: 'plan'; plan: HealthPlan; assistantMessage: string }
+      if (data.kind === 'message') {
+        addMessage('ai', data.text || '我在听，可以再多说一点感受吗？')
+      } else if (data.kind === 'plan' && data.plan) {
+        const nextPlan = data.plan
+        setPlan(nextPlan)
+        setAwaitingConfirmation(nextPlan.requiresConfirmation)
+        setTools(buildReadyTools(nextPlan))
+        addMessage('ai', nextPlan.assistantMessage || buildPlanMessage(nextPlan))
+        if (!nextPlan.requiresConfirmation) {
+          await executePlan(nextPlan)
+        }
+      }
+    } catch (error) {
+      addMessage('system', `网络异常：${error instanceof Error ? error.message : '请稍后再试'}`)
+    } finally {
+      setThinking(false)
+    }
   }
 
   const executePlan = async (targetPlan: HealthPlan) => {
@@ -238,45 +399,57 @@ export default function Home() {
     setTools((current) => current.map((tool) => ({ ...tool, status: 'running' })))
     addMessage('ai', '好的，我现在开始执行。你先坐下休息，手机这边我来处理。')
 
-    const response = await fetch('/api/agent/execute', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        plan: targetPlan,
-        settings: userSettings,
-      }),
-    })
-    const data = await response.json()
-    const results = data.results || []
-
-    setTools((current) =>
-      current.map((tool) => {
-        const matched = results.find((result: any) => result.tool === tool.name)
-        return matched
-          ? { ...tool, status: matched.success ? 'done' : 'failed', detail: matched.message }
-          : tool
-      }),
-    )
-
-    addMessage('ai', '我已经处理好了：请假消息、照护待办和附近社康路线都已整理。接下来请少量多次喝水，继续观察体温变化。')
-  }
-
-  const appendAiDelta = (text: string) => {
-    setMessages((current) => {
-      const id = currentAiMessageIdRef.current
-      if (id) {
-        return current.map((message) =>
-          message.id === id ? { ...message, text: `${message.text}${text}` } : message,
-        )
+    try {
+      const response = await fetch('/api/agent/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan: targetPlan, settings }),
+      })
+      const data = (await response.json()) as {
+        success?: boolean
+        message?: string
+        results?: Array<ToolResult>
       }
-      const nextId = crypto.randomUUID()
-      currentAiMessageIdRef.current = nextId
-      return [...current, { id: nextId, role: 'ai', text }]
-    })
-  }
-
-  const addMessage = (role: Role, text: string) => {
-    setMessages((current) => [...current, { id: crypto.randomUUID(), role, text }])
+      if (!response.ok) {
+        addMessage('system', `执行失败：${data.message || response.statusText}`)
+        setTools((current) =>
+          current.map((tool) => ({ ...tool, status: 'failed', detail: data.message || '执行失败' })),
+        )
+        return
+      }
+      const results = data.results || []
+      setTools((current) => {
+        const used = new Set<string>()
+        const updated = current.map((tool) => {
+          const matched = results.find((r) => r.tool === tool.name && !used.has(r.tool))
+          if (matched) used.add(matched.tool)
+          return matched
+            ? {
+                ...tool,
+                status: matched.success ? ('done' as const) : ('failed' as const),
+                detail: formatToolResult(matched),
+              }
+            : tool
+        })
+        results.forEach((r) => {
+          if (!current.some((t) => t.name === r.tool)) {
+            updated.push({
+              id: crypto.randomUUID(),
+              name: r.tool,
+              detail: formatToolResult(r),
+              status: r.success ? 'done' : 'failed',
+              tone: toolTone(r.tool),
+            })
+          }
+        })
+        return updated
+      })
+      const okCount = results.filter((r) => r.success).length
+      addMessage('ai', buildExecutionSummary(results, okCount))
+    } catch (error) {
+      addMessage('system', `执行异常：${error instanceof Error ? error.message : '请稍后再试'}`)
+      setTools((current) => current.map((tool) => ({ ...tool, status: 'failed' })))
+    }
   }
 
   return (
@@ -288,29 +461,18 @@ export default function Home() {
           plan={plan}
           statusText={statusText}
           recording={recording}
-          listening={listening}
           inputText={inputText}
           awaitingConfirmation={awaitingConfirmation}
+          thinking={thinking}
           onInputChange={setInputText}
           onVoice={toggleVoice}
           onSend={() => void handleUserText(inputText)}
           onConfirm={() => plan && void executePlan(plan)}
+          onClear={clearChat}
+          hasPendingTools={Boolean(plan && tools.some((tool) => tool.status === 'ready'))}
         />
       ) : (
-        <SettingsPage
-          userName={userName}
-          leaderName={leaderName}
-          leaderOpenId={leaderOpenId}
-          homeAddress={homeAddress}
-          emergencyContactName={emergencyContactName}
-          emergencyPhone={emergencyPhone}
-          onUserNameChange={setUserName}
-          onLeaderChange={setLeaderName}
-          onLeaderOpenIdChange={setLeaderOpenId}
-          onHomeAddressChange={setHomeAddress}
-          onEmergencyContactNameChange={setEmergencyContactName}
-          onEmergencyPhoneChange={setEmergencyPhone}
-        />
+        <SettingsPage settings={settings} onUpdate={updateSetting} />
       )}
 
       <BottomNav page={page} onChange={setPage} />
@@ -324,13 +486,15 @@ function AssistantPage(props: {
   plan: HealthPlan | null
   statusText: string
   recording: boolean
-  listening: boolean
   inputText: string
   awaitingConfirmation: boolean
+  thinking: boolean
   onInputChange: (text: string) => void
   onVoice: () => void
   onSend: () => void
   onConfirm: () => void
+  onClear: () => void
+  hasPendingTools: boolean
 }) {
   return (
     <>
@@ -339,18 +503,22 @@ function AssistantPage(props: {
           <h1>CareMate 安安</h1>
           <p>你的独居陪护小助手</p>
         </div>
-        <div className="mini-avatar">
-          <HeartPulse size={20} />
+        <div className="top-bar-actions">
+          <button className="ghost-btn" onClick={props.onClear} aria-label="清空对话">
+            <RotateCcw size={16} />
+          </button>
+          <div className="mini-avatar">
+            <HeartPulse size={20} />
+          </div>
         </div>
       </header>
 
-      <section className="intro">
-        <h2>CareMate</h2>
-        <p>你只需要说话，剩下的我来安排</p>
-      </section>
-
       <section className="orb-section">
-        <button className={`voice-orb ${props.recording ? 'active' : ''}`} onClick={props.onVoice} aria-label="语音沟通">
+        <button
+          className={`voice-orb ${props.recording ? 'active' : ''}`}
+          onClick={props.onVoice}
+          aria-label="语音沟通"
+        >
           <span className="orb-aura" />
           <span className="orb-core">{props.recording ? <MicOff size={42} /> : <Mic size={42} />}</span>
         </button>
@@ -388,12 +556,12 @@ function AssistantPage(props: {
         {props.tools.length > 0 && (
           <div className="action-stack">
             {props.tools.map((tool) => (
-              <ToolActionCard tool={tool} key={tool.id} />
+              <ToolActionCard tool={tool} key={tool.id} onConfirm={props.onConfirm} />
             ))}
           </div>
         )}
 
-        {props.awaitingConfirmation && (
+        {(props.awaitingConfirmation || props.hasPendingTools) && (
           <button className="confirm-card" onClick={props.onConfirm}>
             <ShieldCheck size={18} />
             <span>确认执行这些安排</span>
@@ -402,8 +570,18 @@ function AssistantPage(props: {
       </section>
 
       <section className="voice-input">
-        <input value={props.inputText} onChange={(event) => props.onInputChange(event.target.value)} />
-        <button onClick={props.onSend}>
+        <input
+          value={props.inputText}
+          onChange={(event) => props.onInputChange(event.target.value)}
+          placeholder="跟安安说说哪里不舒服…"
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault()
+              props.onSend()
+            }
+          }}
+        />
+        <button onClick={props.onSend} disabled={props.thinking || !props.inputText.trim()}>
           <Send size={18} />
         </button>
       </section>
@@ -411,8 +589,15 @@ function AssistantPage(props: {
   )
 }
 
-function ToolActionCard({ tool }: { tool: ToolCard }) {
-  const Icon = tool.name === 'send_feishu_message' ? BriefcaseBusiness : tool.name === 'search_nearby_clinic' ? MapPinned : tool.name === 'send_sms_emergency' ? Bell : CheckCircle2
+function ToolActionCard({ tool, onConfirm }: { tool: ToolCard; onConfirm: () => void }) {
+  const Icon =
+    tool.name === 'send_feishu_message'
+      ? BriefcaseBusiness
+      : tool.name === 'search_nearby_clinic' || tool.name === 'route_to_clinic'
+        ? MapPinned
+        : tool.name === 'notify_emergency_contact'
+          ? Bell
+          : CheckCircle2
   return (
     <div className={`tool-card ${tool.tone}`}>
       <div className="tool-icon">
@@ -421,26 +606,29 @@ function ToolActionCard({ tool }: { tool: ToolCard }) {
       <div>
         <h4>{toolLabel(tool.name)}</h4>
         <p>{tool.detail}</p>
+        <span className="status-pill">{toolStatusLabel(tool.status)}</span>
+        {tool.status === 'ready' && tool.name !== 'create_todo_list' && (
+          <button className="tool-confirm-btn" onClick={onConfirm} type="button">
+            确认执行
+          </button>
+        )}
       </div>
       <CheckCircle2 className={tool.status === 'done' ? 'done-icon visible' : 'done-icon'} size={22} />
     </div>
   )
 }
 
-function SettingsPage(props: {
-  userName: string
-  leaderName: string
-  leaderOpenId: string
-  homeAddress: string
-  emergencyContactName: string
-  emergencyPhone: string
-  onUserNameChange: (value: string) => void
-  onLeaderChange: (value: string) => void
-  onLeaderOpenIdChange: (value: string) => void
-  onHomeAddressChange: (value: string) => void
-  onEmergencyContactNameChange: (value: string) => void
-  onEmergencyPhoneChange: (value: string) => void
+function SettingsPage({
+  settings,
+  onUpdate,
+}: {
+  settings: UserSettings
+  onUpdate: <K extends keyof UserSettings>(key: K, value: UserSettings[K]) => void
 }) {
+  const [editing, setEditing] = useState<'profile' | 'contact' | 'work' | 'feishu' | 'map' | null>(null)
+  const feishuConnected = Boolean(settings.feishuAppId && settings.feishuAppSecret)
+  const mapConnected = Boolean(settings.tencentMapKey)
+
   return (
     <>
       <header className="top-bar">
@@ -448,66 +636,92 @@ function SettingsPage(props: {
           <ArrowLeft size={20} />
           <div>
             <h1>CareMate 安安</h1>
-            <p>我的守护圈</p>
+            <p>我的守护圈和应用绑定</p>
           </div>
         </div>
       </header>
 
-      <section className="profile">
-        <div className="profile-photo">陈</div>
-        <h2>{props.userName}</h2>
-        <p>独居 · 深圳南山 · 青霉素过敏</p>
+      <section className="profile settings-profile">
+        <div className="profile-photo verified">{(settings.userName || '安').slice(0, 1)}</div>
+        <h2>{settings.userName || '请填写姓名'}</h2>
+        <p>{settings.homeAddress || '请设置家庭住址'}</p>
       </section>
 
-      <SettingsGroup title="紧急联系人" icon={<Heart size={18} />} action="添加">
-        <PersonRow name={props.emergencyContactName} desc={props.emergencyPhone} tone="blue" />
-        <PersonRow name="Dr. James Wong" desc="私人医生" tone="orange" />
-        <label className="leader-field">
-          紧急联系人姓名
-          <input value={props.emergencyContactName} onChange={(event) => props.onEmergencyContactNameChange(event.target.value)} />
-        </label>
-        <label className="leader-field">
-          紧急联系人电话
-          <input value={props.emergencyPhone} onChange={(event) => props.onEmergencyPhoneChange(event.target.value)} />
-        </label>
-      </SettingsGroup>
+      <SettingsGroup
+        title="个人档案"
+        icon={<UserRound size={18} />}
+        action="编辑"
+        onAction={() => setEditing(editing === 'profile' ? null : 'profile')}
+      >
+        <SummaryRow icon={<UserRound size={18} />} title={settings.userName || '未填写姓名'} detail={settings.medicalNotes ? `病史：${settings.medicalNotes}` : '补充姓名和过往病史'} />
+        {editing === 'profile' && (
+          <div className="edit-panel">
+            <Field label="姓名" value={settings.userName} onChange={(v) => onUpdate('userName', v)} />
 
-      <SettingsGroup title="AI Agent模式" icon={<Sparkles size={18} />}>
-        <div className="setting-line">
-          <div>
-            <b>自主模式</b>
-            <p>开启后，Agent 可以在确认后自主执行任务</p>
+            <TextField label="既往病史/用药备注" value={settings.medicalNotes} placeholder="用一两句话写清楚" onChange={(v) => onUpdate('medicalNotes', v)} />
+            <SaveHint onClose={() => setEditing(null)} />
           </div>
-          <Toggle checked />
-        </div>
+        )}
       </SettingsGroup>
 
-      <SettingsGroup title="关联APP" icon={<Link2 size={18} />}>
-        <AppRow icon={<Pill size={20} />} name="美团" status="已连接" checked tone="yellow" />
-        <AppRow icon={<Car size={20} />} name="滴滴" status="已连接" checked tone="orange" />
-        <AppRow icon={<BriefcaseBusiness size={20} />} name="飞书" status="已连接" checked tone="blue" />
-        <AppRow icon={<MapPinned size={20} />} name="高德地图" status="已连接" checked tone="green" />
+      <SettingsGroup
+        title="紧急联系人"
+        icon={<Heart size={18} />}
+        action="添加/编辑"
+        onAction={() => setEditing(editing === 'contact' ? null : 'contact')}
+      >
+        <ContactRow
+          name={settings.emergencyContactName || '未添加紧急联系人'}
+          relation={settings.emergencyPhone ? `电话：${settings.emergencyPhone}` : '用于高风险时飞书通知或电话联系'}
+          tone="pink"
+        />
+        {editing === 'contact' && (
+          <div className="edit-panel">
+            <Field label="紧急联系人姓名" value={settings.emergencyContactName} placeholder="例如：妈妈 / 张伟" onChange={(v) => onUpdate('emergencyContactName', v)} />
+            <Field label="紧急联系人电话" value={settings.emergencyPhone} placeholder="13800000000" onChange={(v) => onUpdate('emergencyPhone', v)} />
+            <SaveHint onClose={() => setEditing(null)} />
+          </div>
+        )}
       </SettingsGroup>
 
-      <SettingsGroup title="AI Agent权限" icon={<ShieldCheck size={18} />}>
-        <PermissionRow title="自动打车" desc="根据身体情况安排去附近医院" checked />
-        <PermissionRow title="自动发消息" desc="确认后发消息给领导或紧急联系人" checked />
-        <label className="leader-field">
-          用户姓名
-          <input value={props.userName} onChange={(event) => props.onUserNameChange(event.target.value)} />
-        </label>
-        <label className="leader-field">
-          默认领导
-          <input value={props.leaderName} onChange={(event) => props.onLeaderChange(event.target.value)} />
-        </label>
-        <label className="leader-field">
-          领导飞书 open_id（可选）
-          <input value={props.leaderOpenId} onChange={(event) => props.onLeaderOpenIdChange(event.target.value)} placeholder="ou_xxx" />
-        </label>
-        <label className="leader-field">
-          家庭住址
-          <input value={props.homeAddress} onChange={(event) => props.onHomeAddressChange(event.target.value)} />
-        </label>
+      <SettingsGroup
+        title="家庭住址"
+        icon={<House size={18} />}
+        action="编辑"
+        onAction={() => setEditing(editing === 'work' ? null : 'work')}
+      >
+        <SummaryRow icon={<MapPinned size={18} />} title="家庭住址 Home Address" detail={settings.homeAddress || '设置后安安可以搜索附近医院和路线'} />
+        {editing === 'work' && (
+          <div className="edit-panel">
+            <Field label="家庭住址" value={settings.homeAddress} placeholder="例如：深圳市南山区科技园 xx 号" onChange={(v) => onUpdate('homeAddress', v)} />
+
+            <SaveHint onClose={() => setEditing(null)} />
+          </div>
+        )}
+      </SettingsGroup>
+
+      <SettingsGroup title="关联 APP" icon={<Link2 size={18} />}>
+        <ConnectorRow icon={<BriefcaseBusiness size={24} />} name="飞书" detail={feishuConnected ? '已连接，可发送请假消息' : '未连接'} tone="blue" connected={feishuConnected} onClick={() => setEditing(editing === 'feishu' ? null : 'feishu')} />
+        {editing === 'feishu' && (
+          <div className="edit-panel connector-panel">
+            <Field label="飞书 App ID" value={settings.feishuAppId} placeholder="cli_xxx" onChange={(v) => onUpdate('feishuAppId', v)} />
+            <SecretField label="飞书 App Secret" value={settings.feishuAppSecret} placeholder="请输入飞书 App Secret" onChange={(v) => onUpdate('feishuAppSecret', v)} />
+            <Field label="默认飞书联系人姓名" value={settings.leaderName} placeholder="请假时默认发送给谁" onChange={(v) => onUpdate('leaderName', v)} />
+            <SaveHint onClose={() => setEditing(null)} />
+          </div>
+        )}
+        <ConnectorRow icon={<MapPinned size={24} />} name="腾讯地图" detail={mapConnected ? '已连接，可搜索医院和路线' : '未连接'} tone="green" connected={mapConnected} onClick={() => setEditing(editing === 'map' ? null : 'map')} />
+        {editing === 'map' && (
+          <div className="edit-panel connector-panel">
+            <SecretField label="腾讯位置服务 Key" value={settings.tencentMapKey} placeholder="请输入腾讯地图 API Key" onChange={(v) => onUpdate('tencentMapKey', v)} />
+            <SaveHint onClose={() => setEditing(null)} />
+          </div>
+        )}
+      </SettingsGroup>
+
+      <SettingsGroup title="AI Agent 权限" icon={<Sparkles size={18} />}>
+        <PermissionRow title="自动路线规划" detail="根据身体情况搜索附近医院和路线" checked={settings.autoRide} onChange={(value) => onUpdate('autoRide', value)} />
+        <PermissionRow title="自动发消息" detail="确认后给领导或紧急联系人发送飞书消息" checked={settings.autoMessage} onChange={(value) => onUpdate('autoMessage', value)} />
       </SettingsGroup>
     </>
   )
@@ -528,74 +742,270 @@ function BottomNav({ page, onChange }: { page: Page; onChange: (page: Page) => v
   )
 }
 
-function SettingsGroup(props: { title: string; icon: React.ReactNode; action?: string; children: React.ReactNode }) {
+function SettingsGroup(props: {
+  title: string
+  icon: React.ReactNode
+  action?: string
+  onAction?: () => void
+  children: React.ReactNode
+}) {
   return (
     <section className="settings-group">
       <div className="settings-title">
-        <div>{props.icon}{props.title}</div>
-        {props.action && <button><PlusCircle size={16} />{props.action}</button>}
+        <div>
+          {props.icon}
+          {props.title}
+        </div>
+        {props.action && (
+          <button onClick={props.onAction} type="button">
+            <PlusCircle size={16} />
+            {props.action}
+          </button>
+        )}
       </div>
       <div className="settings-box">{props.children}</div>
     </section>
   )
 }
 
-function PersonRow({ name, desc, tone }: { name: string; desc: string; tone: string }) {
-  return (
-    <div className="person-row">
-      <div className={`person-avatar ${tone}`}><UserRound size={18} /></div>
-      <div><b>{name}</b><p>{desc}</p></div>
-      <ChevronRight size={18} />
-    </div>
-  )
-}
 
-function AppRow(props: { icon: React.ReactNode; name: string; status: string; checked?: boolean; tone: string }) {
-  return (
-    <div className="app-row">
-      <div className={`app-icon ${props.tone}`}>{props.icon}</div>
-      <div><b>{props.name}</b><p>{props.status}</p></div>
-      <Toggle checked={props.checked} />
-    </div>
-  )
-}
-
-function PermissionRow(props: { title: string; desc: string; checked?: boolean }) {
+function SummaryRow({ icon, title, detail }: { icon: React.ReactNode; title: string; detail: string }) {
   return (
     <div className="setting-line">
-      <div><b>{props.title}</b><p>{props.desc}</p></div>
-      <Toggle checked={props.checked} />
+      <div className="person-avatar green">{icon}</div>
+      <div>
+        <b>{title}</b>
+        <p>{detail}</p>
+      </div>
+      <Edit3 size={18} className="row-action" />
     </div>
   )
 }
 
-function Toggle({ checked }: { checked?: boolean }) {
-  return <span className={`toggle ${checked ? 'checked' : ''}`}><span /></span>
+function ContactRow({ name, relation, tone }: { name: string; relation: string; tone: 'pink' | 'green' | 'blue' }) {
+  return (
+    <div className="person-row">
+      <div className={`person-avatar ${tone}`}>
+        <UserPlus size={18} />
+      </div>
+      <div>
+        <b>{name}</b>
+        <p>{relation}</p>
+      </div>
+      <Phone size={18} className="row-action" />
+    </div>
+  )
+}
+
+function ConnectorRow({
+  icon,
+  name,
+  detail,
+  tone,
+  connected,
+  onClick,
+}: {
+  icon: React.ReactNode
+  name: string
+  detail: string
+  tone: 'blue' | 'green'
+  connected: boolean
+  onClick: () => void
+}) {
+  return (
+    <button className="app-row app-row-button" onClick={onClick} type="button">
+      <div className={`app-icon ${tone}`}>{icon}</div>
+      <div>
+        <b>{name}</b>
+        <p className={connected ? 'connected-text' : undefined}>{detail}</p>
+      </div>
+      <span className={`toggle ${connected ? 'checked' : ''}`}>
+        <span />
+      </span>
+    </button>
+  )
+}
+
+function PermissionRow({
+  title,
+  detail,
+  checked,
+  onChange,
+}: {
+  title: string
+  detail: string
+  checked: boolean
+  onChange: (checked: boolean) => void
+}) {
+  return (
+    <div className="permission-row">
+      <div className="person-avatar green">
+        <ShieldCheck size={18} />
+      </div>
+      <div>
+        <b>{title}</b>
+        <p>{detail}</p>
+      </div>
+      <button className={`toggle ${checked ? 'checked' : ''}`} onClick={() => onChange(!checked)} type="button" aria-label={title}>
+        <span />
+      </button>
+    </div>
+  )
+}
+
+function SaveHint({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="save-row">
+      <span>已自动保存到后台，主界面 Agent 和工作流会读取这些设置。</span>
+      <button onClick={onClose} type="button">
+        <Save size={16} />
+        完成
+      </button>
+    </div>
+  )
+}
+
+function SecretField({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  placeholder?: string
+}) {
+  const [visible, setVisible] = useState(false)
+  return (
+    <label className="leader-field">
+      {label}
+      <span className="secret-input">
+        <input
+          value={value}
+          placeholder={placeholder}
+          type={visible ? 'text' : 'password'}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <button onClick={() => setVisible((current) => !current)} type="button" aria-label="显示或隐藏密钥">
+          <KeyRound size={16} />
+        </button>
+      </span>
+    </label>
+  )
+}
+function Field({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  placeholder?: string
+}) {
+  return (
+    <label className="leader-field">
+      {label}
+      <input value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
+    </label>
+  )
+}
+
+function TextField({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  placeholder?: string
+}) {
+  return (
+    <label className="leader-field">
+      {label}
+      <textarea
+        rows={3}
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
+  )
+}
+
+function buildExecutionSummary(results: ToolResult[], okCount: number) {
+  const failed = results.filter((result) => !result.success)
+  const base = `执行完成（${okCount}/${results.length} 成功）。`
+  if (!failed.length) return `${base} 任务结果已经更新在卡片里，请继续观察身体变化。`
+  return `${base} 有 ${failed.length} 个子任务需要补充配置或稍后重试：${failed
+    .map((result) => `${toolLabel(result.tool)}：${result.message}`)
+    .join('；')}`
+}
+
+function formatToolResult(result: ToolResult) {
+  const data = result.data as
+    | { clinics?: Array<{ name: string; address?: string; distanceMeters?: number }>; description?: string; selectedClinic?: { name: string; address?: string }; durationSeconds?: number; distanceMeters?: number }
+    | undefined
+  if (result.tool === 'search_nearby_clinic' && data?.clinics?.length) {
+    return `${result.message}：${data.clinics
+      .slice(0, 2)
+      .map((clinic) => `${clinic.name}${clinic.distanceMeters ? `（${Math.round(clinic.distanceMeters)}米）` : ''}`)
+      .join('、')}`
+  }
+  if (result.tool === 'route_to_clinic') {
+    if (data?.selectedClinic?.name && data?.description) return `${data.selectedClinic.name}：${data.description}`
+    if (data?.description) return data.description
+  }
+  return result.message
 }
 
 function buildReadyTools(plan: HealthPlan): ToolCard[] {
-  return plan.suggestedTools.map((tool) => ({
+  return plan.suggestedTools.map<ToolCard>((tool) => ({
     id: crypto.randomUUID(),
     name: tool,
-    status: tool === 'create_todo_list' ? 'done' : 'ready',
-    detail: tool === 'create_todo_list' ? '已生成照护待办' : '等待你确认后执行',
-    tone: tool === 'send_feishu_message' ? 'blue' : tool === 'search_nearby_clinic' ? 'green' : tool === 'send_sms_emergency' ? 'pink' : 'orange',
+    status: 'ready',
+    detail: tool === 'create_todo_list' ? '等待记录照护待办' : '等待你确认后执行',
+    tone: toolTone(tool),
   }))
 }
 
-function toolLabel(name: string) {
-  const labels: Record<string, string> = {
+function toolTone(tool: ToolName): ToolCard['tone'] {
+  if (tool === 'send_feishu_message') return 'blue'
+  if (tool === 'search_nearby_clinic' || tool === 'route_to_clinic') return 'green'
+  if (tool === 'notify_emergency_contact') return 'pink'
+  return 'orange'
+}
+
+function toolStatusLabel(status: ToolCard['status']) {
+  const labels: Record<ToolCard['status'], string> = {
+    ready: '等待确认',
+    running: '执行中',
+    done: '已完成',
+    failed: '失败',
+  }
+  return labels[status]
+}
+
+function toolLabel(name: ToolName) {
+  const labels: Record<ToolName, string> = {
     create_todo_list: '照护待办',
     send_feishu_message: '飞书通知：领导',
-    search_nearby_clinic: '高德地图：附近社康',
-    send_sms_emergency: '短信通知：紧急联系人',
+    search_nearby_clinic: '腾讯地图：附近医院',
+    route_to_clinic: '腾讯地图：路线规划',
+    notify_emergency_contact: '飞书通知：紧急联系人',
   }
-  return labels[name] || name
+  return labels[name]
 }
 
 function buildPlanMessage(plan: HealthPlan) {
   const risk = plan.severity === 'high' ? '偏高' : plan.severity === 'medium' ? '中等' : '较低'
-  const confirm = plan.requiresConfirmation ? '如果你确认，我会继续执行请假和路线查询。你可以直接说“确认执行”。' : '我先把照护待办记下来。'
+  const confirm = plan.requiresConfirmation
+    ? '如果你确认，我会继续执行这些事项。你可以直接说"确认执行"。'
+    : '我先把照护待办记下来。'
   return `我判断你现在的风险是${risk}。${plan.summary}\n\n我建议：${plan.todos.join('、')}。\n${confirm}`
 }
 
