@@ -536,7 +536,9 @@ function AssistantPage(props: {
                 <Sparkles size={16} />
               </div>
             )}
-            <div className="bubble">{message.text}</div>
+            <div className="bubble">
+              <MessageText text={message.text} />
+            </div>
           </article>
         ))}
 
@@ -782,6 +784,24 @@ function SummaryRow({ icon, title, detail }: { icon: React.ReactNode; title: str
       </div>
       <Edit3 size={18} className="row-action" />
     </div>
+  )
+}
+
+function MessageText({ text }: { text: string }) {
+  const urlPattern = /(https?:\/\/[^\s]+)/g
+  const parts = text.split(urlPattern)
+  return (
+    <>
+      {parts.map((part, index) =>
+        part.match(urlPattern) ? (
+          <a className="bubble-link" href={part} target="_blank" rel="noreferrer" key={`${part}-${index}`}>
+            打开地图路线
+          </a>
+        ) : (
+          <span key={`${part}-${index}`}>{part}</span>
+        ),
+      )}
+    </>
   )
 }
 
