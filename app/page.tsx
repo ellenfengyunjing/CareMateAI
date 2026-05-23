@@ -790,13 +790,17 @@ function SummaryRow({ icon, title, detail }: { icon: React.ReactNode; title: str
 function MessageText({ text }: { text: string }) {
   const urlPattern = /(https?:\/\/[^\s]+)/g
   const parts = text.split(urlPattern)
+  const openExternalLink = (url: string) => {
+    window.location.assign(url)
+  }
+
   return (
     <>
       {parts.map((part, index) =>
         part.match(urlPattern) ? (
-          <a className="bubble-link" href={part} target="_blank" rel="noreferrer" key={`${part}-${index}`}>
+          <button className="bubble-link" onClick={() => openExternalLink(part)} type="button" key={`${part}-${index}`}>
             打开地图路线
-          </a>
+          </button>
         ) : (
           <span key={`${part}-${index}`}>{part}</span>
         ),
@@ -968,6 +972,8 @@ type RouteResultData = {
   distanceMeters?: number
   durationSeconds?: number
   description?: string
+  fromLocation?: { lat: number; lng: number }
+  toLocation?: { lat: number; lng: number }
   selectedClinic?: {
     name: string
     address?: string
@@ -1024,16 +1030,17 @@ function buildRouteSummary(result: ToolResult) {
 
 function buildTencentRouteUrl(data: RouteResultData | undefined) {
   const clinic = data?.selectedClinic
-  const location = clinic?.location
-  if (!clinic?.name || !location) return ''
+  const toLocation = clinic?.location || data?.toLocation
+  if (!toLocation) return ''
   const params = new URLSearchParams({
     type: 'drive',
-    to: clinic.name,
-    tocoord: `${location.lat},${location.lng}`,
+    to: clinic?.name || data?.to || '推荐医院',
+    tocoord: `${toLocation.lat},${toLocation.lng}`,
     policy: '0',
     referer: 'CareMate',
   })
   if (data?.from) params.set('from', data.from)
+  if (data?.fromLocation) params.set('fromcoord', `${data.fromLocation.lat},${data.fromLocation.lng}`)
   return `https://apis.map.qq.com/uri/v1/routeplan?${params.toString()}`
 }
 
