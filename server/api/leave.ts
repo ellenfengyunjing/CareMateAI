@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { analyzeHealth, generateLeaveMessage } from '../agents/healthAgent.js'
-import { searchUserByName, sendMessage } from '../feishu/client.js'
+import { sendMessageToUser } from '../feishu/client.js'
 import { AppError } from '../lib/httpError.js'
 
 export const leaveRouter = Router()
@@ -9,6 +9,12 @@ export const leaveRouter = Router()
 const sendLeaveSchema = z.object({
   symptom: z.string().trim().min(2).max(800),
   leaderName: z.string().trim().min(1).max(40),
+  leaderOpenId: z.string().trim().optional(),
+  leaderUserId: z.string().trim().optional(),
+  leaderMobile: z.string().trim().optional(),
+  leaderEmail: z.string().trim().optional(),
+  feishuAppId: z.string().trim().optional(),
+  feishuAppSecret: z.string().trim().optional(),
 })
 
 leaveRouter.post('/send', async (req, res, next) => {
@@ -18,7 +24,16 @@ leaveRouter.post('/send', async (req, res, next) => {
       throw new AppError(400, 'INVALID_REQUEST', '请填写有效的症状描述和领导姓名')
     }
 
-    const { symptom, leaderName } = parsed.data
+    const {
+      symptom,
+      leaderName,
+      leaderOpenId,
+      leaderUserId,
+      leaderMobile,
+      leaderEmail,
+      feishuAppId,
+      feishuAppSecret,
+    } = parsed.data
     const health = await analyzeHealth(symptom)
     const leaveMessage = await generateLeaveMessage({
       symptom,
@@ -26,8 +41,21 @@ leaveRouter.post('/send', async (req, res, next) => {
       severity: health.severity,
       recommendedActions: health.recommendedActions,
     })
-    const leader = await searchUserByName(leaderName)
-    const sent = await sendMessage(leader.openId, leaveMessage.message)
+    const sent = await sendMessageToUser(
+      {
+        name: leaderName,
+        openId: leaderOpenId,
+        userId: leaderUserId,
+        mobile: leaderMobile,
+        email: leaderEmail,
+      },
+      leaveMessage.message,
+      {
+        appId: feishuAppId,
+        appSecret: feishuAppSecret,
+      },
+    )
+    const leader = sent.user
 
     res.json({
       success: true,

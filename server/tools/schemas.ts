@@ -12,12 +12,23 @@ export type AgentIntent = z.infer<typeof intentSchema>
 export const sendFeishuMessageSchema = z.object({
   receiver: z.string().min(1),
   message_text: z.string().min(1),
+  feishu_app_id: z.string().optional(),
+  feishu_app_secret: z.string().optional(),
   receiver_open_id: z.string().optional(),
+  receiver_user_id: z.string().optional(),
+  receiver_mobile: z.string().optional(),
+  receiver_email: z.string().optional(),
 })
 
-export const sendSmsEmergencySchema = z.object({
-  phone_number: z.string().min(4),
-  message: z.string().min(1),
+export const notifyEmergencyContactSchema = z.object({
+  contact_name: z.string().min(1),
+  message_text: z.string().min(1),
+  feishu_app_id: z.string().optional(),
+  feishu_app_secret: z.string().optional(),
+  contact_open_id: z.string().optional(),
+  contact_user_id: z.string().optional(),
+  contact_mobile: z.string().optional(),
+  contact_email: z.string().optional(),
 })
 
 export const createTodoListSchema = z.object({
@@ -29,19 +40,28 @@ export const searchNearbyClinicSchema = z.object({
   location: z.string().min(1),
   severity: z.enum(['low', 'medium', 'high']),
   symptom_summary: z.string().min(1),
+  tencent_key: z.string().optional(),
+})
+
+export const routeToClinicSchema = z.object({
+  from: z.string().min(1),
+  to: z.string().min(1),
+  mode: z.enum(['walking', 'driving']).default('driving'),
+  tencent_key: z.string().optional(),
 })
 
 export type ToolName =
   | 'send_feishu_message'
-  | 'send_sms_emergency'
+  | 'notify_emergency_contact'
   | 'create_todo_list'
   | 'search_nearby_clinic'
+  | 'route_to_clinic'
 
 export const realtimeTools = [
   {
     type: 'function',
     name: 'send_feishu_message',
-    description: '发送飞书请假或通知消息。必须在需要请假、通知领导、同步工作情况时调用。',
+    description: '发送飞书请假或工作通知消息给领导。仅在用户确认请假或同步工作情况时调用。',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -60,28 +80,28 @@ export const realtimeTools = [
   },
   {
     type: 'function',
-    name: 'send_sms_emergency',
-    description: '发送短信通知紧急联系人。只有高风险或用户明确要求通知家人时调用。',
+    name: 'notify_emergency_contact',
+    description: '通过飞书通知用户的紧急联系人（家人/朋友）。仅在高风险或用户明确要求通知家人时调用。',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        phone_number: {
+        contact_name: {
           type: 'string',
-          description: '紧急联系人手机号。',
+          description: '紧急联系人飞书姓名，例如 妈妈 或 张伟。',
         },
-        message: {
+        message_text: {
           type: 'string',
-          description: '包含用户症状、当前位置或下一步安排的紧急通知内容。',
+          description: '包含用户当前症状、地点和下一步安排的关切性通知。',
         },
       },
-      required: ['phone_number', 'message'],
+      required: ['contact_name', 'message_text'],
     },
   },
   {
     type: 'function',
     name: 'create_todo_list',
-    description: '创建病中照护待办事项，并输出 intent/severity/summary/todos 结构化结果。',
+    description: '记录病中照护待办事项，并输出 intent/severity/summary/todos 结构化结果。',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -118,7 +138,7 @@ export const realtimeTools = [
   {
     type: 'function',
     name: 'search_nearby_clinic',
-    description: '搜索附近社康、医院和路线。用户病情中高风险或确认就医时调用。',
+    description: '搜索用户附近的社康/医院。需要医疗就诊时调用。',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -133,10 +153,25 @@ export const realtimeTools = [
         },
         symptom_summary: {
           type: 'string',
-          description: '用户症状摘要。',
+          description: '用户症状摘要，用于选择社康还是急诊。',
         },
       },
       required: ['location', 'severity', 'symptom_summary'],
+    },
+  },
+  {
+    type: 'function',
+    name: 'route_to_clinic',
+    description: '查询从用户位置到指定医院的步行或驾车路线。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        from: { type: 'string', description: '起点地址或经纬度。' },
+        to: { type: 'string', description: '终点医院/社康名称或经纬度。' },
+        mode: { type: 'string', enum: ['walking', 'driving'] },
+      },
+      required: ['from', 'to'],
     },
   },
 ] as const

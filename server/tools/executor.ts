@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { env } from '../config/env.js'
-import { searchUserByName, sendMessage } from '../feishu/client.js'
+import { sendMessageToUser } from '../feishu/client.js'
+import { getRoute, searchNearbyClinics } from './tencentMap.js'
 import {
   createTodoListSchema,
+  notifyEmergencyContactSchema,
+  routeToClinicSchema,
   searchNearbyClinicSchema,
   sendFeishuMessageSchema,
-  sendSmsEmergencySchema,
   type ToolName,
 } from './schemas.js'
 
@@ -16,6 +18,51 @@ export type ToolExecutionResult = {
   success: boolean
   message: string
   data?: unknown
+}
+
+async function deliverFeishuMessage(input: {
+  receiverName: string
+  text: string
+  appId?: string
+  appSecret?: string
+  openId?: string
+  userId?: string
+  mobile?: string
+  email?: string
+}) {
+  if (env.FEISHU_MOCK) {
+    return {
+      provider: 'mock' as const,
+      receiver: input.receiverName,
+      openId: input.openId || 'ou_mock',
+      messageId: `mock_${randomUUID()}`,
+      messageText: input.text,
+    }
+  }
+  const appConfig = {
+    appId: input.appId,
+    appSecret: input.appSecret,
+  }
+  const sent = await sendMessageToUser(
+    {
+      name: input.receiverName,
+      openId: input.openId,
+      userId: input.userId,
+      mobile: input.mobile,
+      email: input.email,
+    },
+    input.text,
+    appConfig,
+  )
+  const user = sent.user
+  return {
+    provider: 'feishu' as const,
+    receiver: user.name,
+    openId: user.openId,
+    messageId: sent.messageId,
+    createTime: sent.createTime,
+    messageText: input.text,
+  }
 }
 
 export async function executeTool(name: string, rawArguments: unknown): Promise<ToolExecutionResult> {
@@ -35,90 +82,91 @@ export async function executeTool(name: string, rawArguments: unknown): Promise<
     }
   }
 
-  if (name === 'send_sms_emergency') {
-    const args = sendSmsEmergencySchema.parse(rawArguments)
-    if (env.SMS_MOCK) {
-      return {
-        id,
-        tool: name,
-        success: true,
-        message: `短信 mock 已发送给 ${maskPhone(args.phone_number)}`,
-        data: {
-          provider: 'mock',
-          phoneNumber: maskPhone(args.phone_number),
-          message: args.message,
-        },
-      }
-    }
-
+  if (name === 'send_feishu_message') {
+    const args = sendFeishuMessageSchema.parse(rawArguments)
+    const data = await deliverFeishuMessage({
+      receiverName: args.receiver,
+      text: args.message_text,
+      appId: args.feishu_app_id,
+      appSecret: args.feishu_app_secret,
+      openId: args.receiver_open_id,
+      userId: args.receiver_user_id,
+      mobile: args.receiver_mobile,
+      email: args.receiver_email,
+    })
     return {
       id,
       tool: name,
-      success: false,
-      message: '真实短信供应商尚未配置，已阻止发送',
+      success: true,
+      message: data.provider === 'mock' ? `飞书 mock 已发送给 ${data.receiver}` : `飞书消息已发送给 ${data.receiver}`,
+      data,
+    }
+  }
+
+  if (name === 'notify_emergency_contact') {
+    const args = notifyEmergencyContactSchema.parse(rawArguments)
+    const data = await deliverFeishuMessage({
+      receiverName: args.contact_name,
+      text: args.message_text,
+      appId: args.feishu_app_id,
+      appSecret: args.feishu_app_secret,
+      openId: args.contact_open_id,
+      userId: args.contact_user_id,
+      mobile: args.contact_mobile,
+      email: args.contact_email,
+    })
+    return {
+      id,
+      tool: name,
+      success: true,
+      message:
+        data.provider === 'mock'
+          ? `已通过飞书 mock 通知紧急联系人 ${data.receiver}`
+          : `已通过飞书通知紧急联系人 ${data.receiver}`,
+      data,
     }
   }
 
   if (name === 'search_nearby_clinic') {
     const args = searchNearbyClinicSchema.parse(rawArguments)
+    const clinics = await searchNearbyClinics({
+      location: args.location,
+      severity: args.severity,
+      keyOverride: args.tencent_key,
+    })
     return {
       id,
       tool: name,
       success: true,
-      message: '已找到附近社康和推荐路线',
+      message: clinics.length ? `找到 ${clinics.length} 家附近医疗点` : '附近暂未搜到合适医疗点',
       data: {
-        provider: 'amap-mock',
+        provider: 'tencent-map',
         location: args.location,
         severity: args.severity,
-        options: [
-          {
-            name: '南山社区健康服务中心',
-            distance: '1.2km',
-            route: '步行 14 分钟 / 打车 6 分钟',
-            available: '今天 16:30 可预约全科',
-          },
-          {
-            name: '深圳大学总医院',
-            distance: '4.8km',
-            route: '打车 18 分钟',
-            available: '急诊 24 小时',
-          },
-        ],
+        symptomSummary: args.symptom_summary,
+        clinics,
       },
     }
   }
 
-  if (name === 'send_feishu_message') {
-    const args = sendFeishuMessageSchema.parse(rawArguments)
-    if (env.FEISHU_MOCK) {
-      return {
-        id,
-        tool: name,
-        success: true,
-        message: `飞书 mock 已发送给 ${args.receiver}`,
-        data: {
-          provider: 'mock',
-          receiver: args.receiver,
-          messageText: args.message_text,
-        },
-      }
-    }
-
-    const user = args.receiver_open_id
-      ? { name: args.receiver, openId: args.receiver_open_id }
-      : await searchUserByName(args.receiver)
-    const sent = await sendMessage(user.openId, args.message_text)
+  if (name === 'route_to_clinic') {
+    const args = routeToClinicSchema.parse(rawArguments)
+    const route = await getRoute({
+      from: args.from,
+      to: args.to,
+      mode: args.mode,
+      keyOverride: args.tencent_key,
+    })
     return {
       id,
       tool: name,
       success: true,
-      message: `飞书消息已发送给 ${user.name}`,
+      message: route.description,
       data: {
-        provider: 'feishu',
-        receiver: user.name,
-        openId: user.openId,
-        messageId: sent.messageId,
-        createTime: sent.createTime,
+        provider: 'tencent-map',
+        from: args.from,
+        to: args.to,
+        ...route,
       },
     }
   }
@@ -140,9 +188,4 @@ export function parseToolArguments(args: string | undefined) {
       },
     ])
   }
-}
-
-function maskPhone(phone: string) {
-  if (phone.length < 7) return phone
-  return `${phone.slice(0, 3)}****${phone.slice(-4)}`
 }
