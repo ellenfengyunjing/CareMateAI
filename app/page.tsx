@@ -35,6 +35,9 @@ type ChatMessage = {
   id: string
   role: Role
   text: string
+  plan?: HealthPlan | null
+  tools?: ToolCard[]
+  awaitingConfirmation?: boolean
 }
 
 type ToolName =
@@ -136,6 +139,7 @@ export default function Home() {
   const [plan, setPlan] = useState<HealthPlan | null>(null)
   const [tools, setTools] = useState<ToolCard[]>([])
   const [awaitingConfirmation, setAwaitingConfirmation] = useState(false)
+  const [activePlanMessageId, setActivePlanMessageId] = useState<string | null>(null)
   const [thinking, setThinking] = useState(false)
   const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS)
 
@@ -144,7 +148,14 @@ export default function Home() {
   const audioContextRef = useRef<AudioContext | null>(null)
   const processorRef = useRef<ScriptProcessorNode | null>(null)
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  const silentGainRef = useRef<GainNode | null>(null)
   const currentAiMessageIdRef = useRef<string | null>(null)
+  const voiceReplyEnabledRef = useRef(false)
+  const longListeningRef = useRef(false)
+  const wakeArmedRef = useRef(false)
+  const voiceHeardSpeechRef = useRef(false)
+  const voiceSilenceTimerRef = useRef<number | null>(null)
+  const voiceRestartTimerRef = useRef<number | null>(null)
   const hydratedRef = useRef(false)
 
   useEffect(() => {
@@ -168,12 +179,21 @@ export default function Home() {
             plan?: HealthPlan | null
             tools?: ToolCard[]
             awaitingConfirmation?: boolean
+            activePlanMessageId?: string | null
           }
-          if (parsed.messages?.length) setMessages(parsed.messages)
-          if (parsed.plan) setPlan(parsed.plan)
-          if (parsed.tools) setTools(parsed.tools)
-          if (typeof parsed.awaitingConfirmation === 'boolean') setAwaitingConfirmation(parsed.awaitingConfirmation)
-          else if (parsed.plan?.requiresConfirmation && parsed.tools?.some((tool) => tool.status === 'ready')) setAwaitingConfirmation(true)
+          if (parsed.messages?.length) {
+            const nextMessages = migrateStoredMessages(parsed.messages, parsed.plan, parsed.tools, parsed.awaitingConfirmation)
+            const activeMessage =
+              nextMessages.find((message) => message.id === parsed.activePlanMessageId && message.plan) ||
+              [...nextMessages].reverse().find((message) => message.plan)
+            setMessages(nextMessages)
+            if (activeMessage?.plan) {
+              setPlan(activeMessage.plan)
+              setTools(activeMessage.tools || [])
+              setAwaitingConfirmation(Boolean(activeMessage.awaitingConfirmation))
+              setActivePlanMessageId(activeMessage.id)
+            }
+          }
         }
       } catch {
         window.localStorage.removeItem(SETTINGS_KEY)
@@ -203,8 +223,8 @@ export default function Home() {
 
   useEffect(() => {
     if (!hydratedRef.current) return
-    window.localStorage.setItem(CHAT_KEY, JSON.stringify({ messages, plan, tools, awaitingConfirmation }))
-  }, [messages, plan, tools, awaitingConfirmation])
+    window.localStorage.setItem(CHAT_KEY, JSON.stringify({ messages, activePlanMessageId }))
+  }, [messages, activePlanMessageId])
 
   const statusText = useMemo(() => {
     if (recording) return '正在倾听...'
@@ -219,7 +239,35 @@ export default function Home() {
   }
 
   const addMessage = (role: Role, text: string) => {
-    setMessages((current) => [...current, { id: crypto.randomUUID(), role, text }])
+    const id = crypto.randomUUID()
+    setMessages((current) => [...current, { id, role, text }])
+    return id
+  }
+
+  const addPlanMessage = (text: string, nextPlan: HealthPlan) => {
+    const id = crypto.randomUUID()
+    const nextTools = buildReadyTools(nextPlan)
+    setMessages((current) => [
+      ...current,
+      {
+        id,
+        role: 'ai',
+        text,
+        plan: nextPlan,
+        tools: nextTools,
+        awaitingConfirmation: nextPlan.requiresConfirmation,
+      },
+    ])
+    setPlan(nextPlan)
+    setTools(nextTools)
+    setAwaitingConfirmation(nextPlan.requiresConfirmation)
+    setActivePlanMessageId(id)
+    return id
+  }
+
+  const updatePlanMessage = (messageId: string | null, updater: (message: ChatMessage) => ChatMessage) => {
+    if (!messageId) return
+    setMessages((current) => current.map((message) => (message.id === messageId ? updater(message) : message)))
   }
 
   const appendAiDelta = (text: string) => {
@@ -241,7 +289,21 @@ export default function Home() {
     setPlan(null)
     setTools([])
     setAwaitingConfirmation(false)
+    setActivePlanMessageId(null)
     currentAiMessageIdRef.current = null
+  }
+
+  const speakAssistantText = (text: string) => {
+    if (!voiceReplyEnabledRef.current) return
+    if (!('speechSynthesis' in window)) return
+    const cleaned = text.replace(/https?:\/\/[^\s]+/g, '').trim()
+    if (!cleaned) return
+    window.speechSynthesis.cancel()
+    const utterance = new SpeechSynthesisUtterance(cleaned)
+    utterance.lang = 'zh-CN'
+    utterance.rate = 1
+    utterance.pitch = 1
+    window.speechSynthesis.speak(utterance)
   }
 
   // PLACEHOLDER_HOME_BODY removed
@@ -274,7 +336,15 @@ export default function Home() {
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data)
       if (data.type === 'transcript.user') {
-        void handleUserText(data.text)
+        voiceReplyEnabledRef.current = true
+        void handleUserText(data.text).finally(() => {
+          if (longListeningRef.current && !recording) {
+            if (voiceRestartTimerRef.current) window.clearTimeout(voiceRestartTimerRef.current)
+            voiceRestartTimerRef.current = window.setTimeout(() => {
+              if (longListeningRef.current && !recording) void toggleVoice()
+            }, 700)
+          }
+        })
       }
       if (data.type === 'transcript.ai.delta') {
         appendAiDelta(data.text)
@@ -290,55 +360,120 @@ export default function Home() {
 
   const toggleVoice = async () => {
     if (recording) {
+      longListeningRef.current = false
       stopRecording()
       return
     }
 
     connectRealtime()
+    longListeningRef.current = true
 
     try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        addMessage('system', '当前浏览器不支持麦克风采集。请用 Chrome、Edge 或允许麦克风的内置浏览器打开。')
+        return
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       })
-      const audioContext = new AudioContext({ sampleRate: 24000 })
+      const audioContext = new AudioContext()
+      await audioContext.resume()
       const source = audioContext.createMediaStreamSource(stream)
       const processor = audioContext.createScriptProcessor(4096, 1, 1)
+      const silentGain = audioContext.createGain()
+      silentGain.gain.value = 0
 
       processor.onaudioprocess = (event) => {
         const ws = wsRef.current
         if (!ws || ws.readyState !== WebSocket.OPEN) return
+        const input = event.inputBuffer.getChannelData(0)
+        const rms = getRms(input)
+        if (rms > 0.018) {
+          voiceHeardSpeechRef.current = true
+          if (voiceSilenceTimerRef.current) window.clearTimeout(voiceSilenceTimerRef.current)
+          voiceSilenceTimerRef.current = window.setTimeout(() => {
+            if (voiceHeardSpeechRef.current) stopRecording({ auto: true })
+          }, 1200)
+        }
+
+        const pcm16k = resampleFloat32Array(input, audioContext.sampleRate, 16000)
         ws.send(
           JSON.stringify({
             type: 'audio.append',
-            audio: floatTo16BitPcmBase64(event.inputBuffer.getChannelData(0)),
+            audio: floatTo16BitPcmBase64(pcm16k),
           }),
         )
       }
 
       source.connect(processor)
-      processor.connect(audioContext.destination)
+      processor.connect(silentGain)
+      silentGain.connect(audioContext.destination)
       mediaStreamRef.current = stream
       audioContextRef.current = audioContext
       sourceRef.current = source
       processorRef.current = processor
+      silentGainRef.current = silentGain
+      voiceHeardSpeechRef.current = false
       setRecording(true)
-    } catch {
-      addMessage('system', '没有拿到麦克风权限。可以直接用下方文字框跟我聊。')
+    } catch (error) {
+      const detail = error instanceof Error ? `${error.name || 'Error'}：${error.message}` : '未知错误'
+      addMessage('system', `麦克风启动失败：${detail}。请确认浏览器地址栏已允许 localhost 使用麦克风，然后再点一次语音按钮。`)
     }
   }
 
-  const stopRecording = () => {
-    wsRef.current?.send(JSON.stringify({ type: 'audio.commit' }))
+  const stopRecording = (options: { auto?: boolean; commit?: boolean } = {}) => {
+    const shouldCommit = options.commit ?? true
+    if (voiceSilenceTimerRef.current) window.clearTimeout(voiceSilenceTimerRef.current)
+    voiceSilenceTimerRef.current = null
+    if (shouldCommit && voiceHeardSpeechRef.current) wsRef.current?.send(JSON.stringify({ type: 'audio.commit' }))
     processorRef.current?.disconnect()
     sourceRef.current?.disconnect()
+    silentGainRef.current?.disconnect()
     mediaStreamRef.current?.getTracks().forEach((track) => track.stop())
+    void audioContextRef.current?.close()
+    processorRef.current = null
+    sourceRef.current = null
+    silentGainRef.current = null
+    mediaStreamRef.current = null
+    audioContextRef.current = null
+    voiceHeardSpeechRef.current = false
     setRecording(false)
   }
 
   const handleUserText = async (text: string) => {
-    const normalized = text.trim()
+    let normalized = text.trim()
     if (!normalized) return
     setInputText('')
+
+    const pendingMessage =
+      messages.find((message) => message.id === activePlanMessageId && message.plan) ||
+      [...messages].reverse().find((message) => message.plan && message.awaitingConfirmation)
+    const pendingPlan = pendingMessage?.plan || plan
+    const pendingAwaiting = Boolean(pendingMessage?.awaitingConfirmation ?? awaitingConfirmation)
+
+    if (pendingPlan && pendingAwaiting && /确认|可以|执行|发送|帮我发|就这样|好的|去吧|是的|继续|好|可以的/.test(normalized)) {
+      addMessage('user', normalized)
+      await executePlan(pendingPlan, pendingMessage?.id || activePlanMessageId)
+      return
+    }
+
+    if (voiceReplyEnabledRef.current) {
+      const voiceCommand = getVoiceCommand(normalized, wakeArmedRef.current)
+      if (!voiceCommand.shouldProcess) {
+        addMessage('system', '我听到了。需要我处理时，请先叫“安安”或“安安同学”。')
+        return
+      }
+      if (!voiceCommand.text) {
+        wakeArmedRef.current = true
+        const reply = '我在，你继续说。'
+        addMessage('ai', reply)
+        speakAssistantText(reply)
+        return
+      }
+      wakeArmedRef.current = false
+      normalized = voiceCommand.text
+    }
 
     if (
       plan &&
@@ -376,15 +511,16 @@ export default function Home() {
         | { kind: 'message'; text: string }
         | { kind: 'plan'; plan: HealthPlan; assistantMessage: string }
       if (data.kind === 'message') {
-        addMessage('ai', data.text || '我在听，可以再多说一点感受吗？')
+        const reply = data.text || '我在听，可以再多说一点感受吗？'
+        addMessage('ai', reply)
+        speakAssistantText(reply)
       } else if (data.kind === 'plan' && data.plan) {
         const nextPlan = data.plan
-        setPlan(nextPlan)
-        setAwaitingConfirmation(nextPlan.requiresConfirmation)
-        setTools(buildReadyTools(nextPlan))
-        addMessage('ai', nextPlan.assistantMessage || buildPlanMessage(nextPlan))
+        const reply = nextPlan.assistantMessage || buildPlanMessage(nextPlan)
+        const planMessageId = addPlanMessage(reply, nextPlan)
+        speakAssistantText(reply)
         if (!nextPlan.requiresConfirmation) {
-          await executePlan(nextPlan)
+          await executePlan(nextPlan, planMessageId)
         }
       }
     } catch (error) {
@@ -394,9 +530,14 @@ export default function Home() {
     }
   }
 
-  const executePlan = async (targetPlan: HealthPlan) => {
+  const executePlan = async (targetPlan: HealthPlan, messageId = activePlanMessageId) => {
     setAwaitingConfirmation(false)
     setTools((current) => current.map((tool) => ({ ...tool, status: 'running' })))
+    updatePlanMessage(messageId, (message) => ({
+      ...message,
+      awaitingConfirmation: false,
+      tools: (message.tools || []).map((tool) => ({ ...tool, status: 'running' })),
+    }))
     addMessage('ai', '好的，我现在开始执行。你先坐下休息，手机这边我来处理。')
 
     try {
@@ -447,8 +588,14 @@ export default function Home() {
         })
         return updated
       })
+      updatePlanMessage(messageId, (message) => ({
+        ...message,
+        tools: applyToolResults(message.tools || [], results),
+      }))
       const okCount = results.filter((r) => r.success).length
-      addMessage('ai', buildExecutionSummary(results, okCount))
+      const summary = buildExecutionSummary(results, okCount)
+      addMessage('ai', summary)
+      speakAssistantText(summary)
     } catch (error) {
       addMessage('system', `执行异常：${error instanceof Error ? error.message : '请稍后再试'}`)
       setTools((current) => current.map((tool) => ({ ...tool, status: 'failed' })))
@@ -469,8 +616,14 @@ export default function Home() {
           thinking={thinking}
           onInputChange={setInputText}
           onVoice={toggleVoice}
-          onSend={() => void handleUserText(inputText)}
-          onConfirm={() => plan && void executePlan(plan)}
+          onSend={() => {
+            voiceReplyEnabledRef.current = false
+            void handleUserText(inputText)
+          }}
+          onConfirm={(targetPlan, messageId) => {
+            const nextPlan = targetPlan || plan
+            if (nextPlan) void executePlan(nextPlan, messageId || activePlanMessageId)
+          }}
           onClear={clearChat}
           hasPendingTools={Boolean(plan && tools.some((tool) => tool.status === 'ready'))}
         />
@@ -495,7 +648,7 @@ function AssistantPage(props: {
   onInputChange: (text: string) => void
   onVoice: () => void
   onSend: () => void
-  onConfirm: () => void
+  onConfirm: (plan?: HealthPlan, messageId?: string) => void
   onClear: () => void
   hasPendingTools: boolean
 }) {
@@ -530,19 +683,56 @@ function AssistantPage(props: {
 
       <section className="conversation">
         {props.messages.map((message) => (
-          <article className={`bubble-row ${message.role}`} key={message.id}>
-            {message.role !== 'user' && (
-              <div className="assistant-mark">
-                <Sparkles size={16} />
+          <div key={message.id}>
+            <article className={`bubble-row ${message.role}`}>
+              {message.role !== 'user' && (
+                <div className="assistant-mark">
+                  <Sparkles size={16} />
+                </div>
+              )}
+              <div className="bubble">
+                <MessageText text={message.text} />
+              </div>
+            </article>
+
+            {message.plan && (
+              <article className="agent-card">
+                <div className="card-heading">
+                  <Stethoscope size={18} />
+                  <span>Agent 判断</span>
+                  <b>{message.plan.severity}</b>
+                </div>
+                <p>{message.plan.summary}</p>
+                <ul>
+                  {message.plan.todos.map((todo) => (
+                    <li key={todo}>{todo}</li>
+                  ))}
+                </ul>
+              </article>
+            )}
+
+            {message.tools && message.tools.length > 0 && (
+              <div className="action-stack">
+                {message.tools.map((tool) => (
+                  <ToolActionCard
+                    tool={tool}
+                    key={tool.id}
+                    onConfirm={() => props.onConfirm(message.plan || undefined, message.id)}
+                  />
+                ))}
               </div>
             )}
-            <div className="bubble">
-              <MessageText text={message.text} />
-            </div>
-          </article>
+
+            {(message.awaitingConfirmation || message.tools?.some((tool) => tool.status === 'ready')) && message.plan && (
+              <button className="confirm-card" onClick={() => props.onConfirm(message.plan || undefined, message.id)}>
+                <ShieldCheck size={18} />
+                <span>确认执行这些安排</span>
+              </button>
+            )}
+          </div>
         ))}
 
-        {props.plan && (
+        {false && props.plan && (
           <article className="agent-card">
             <div className="card-heading">
               <Stethoscope size={18} />
@@ -558,7 +748,7 @@ function AssistantPage(props: {
           </article>
         )}
 
-        {props.tools.length > 0 && (
+        {false && props.tools.length > 0 && (
           <div className="action-stack">
             {props.tools.map((tool) => (
               <ToolActionCard tool={tool} key={tool.id} onConfirm={props.onConfirm} />
@@ -566,8 +756,8 @@ function AssistantPage(props: {
           </div>
         )}
 
-        {(props.awaitingConfirmation || props.hasPendingTools) && (
-          <button className="confirm-card" onClick={props.onConfirm}>
+        {false && (props.awaitingConfirmation || props.hasPendingTools) && (
+          <button className="confirm-card" onClick={() => props.onConfirm()}>
             <ShieldCheck size={18} />
             <span>确认执行这些安排</span>
           </button>
@@ -1085,6 +1275,80 @@ function buildReadyTools(plan: HealthPlan): ToolCard[] {
   }))
 }
 
+function applyToolResults(current: ToolCard[], results: ToolResult[]) {
+  const used = new Set<string>()
+  const hasRouteCard = current.some((tool) => tool.name === 'route_to_clinic')
+  const hasRouteResult = results.some((result) => result.tool === 'route_to_clinic')
+  const updated = current.map((tool) => {
+    const matched = findResultForTool(tool, results, used)
+    if (matched) used.add(matched.tool)
+    return matched
+      ? {
+          ...tool,
+          status: matched.success ? ('done' as const) : ('failed' as const),
+          detail: formatToolResult(matched),
+        }
+      : tool
+  })
+
+  results.forEach((result) => {
+    if (result.tool === 'search_nearby_clinic' && (hasRouteCard || hasRouteResult)) return
+    if (!current.some((tool) => tool.name === result.tool)) {
+      updated.push({
+        id: crypto.randomUUID(),
+        name: result.tool,
+        detail: formatToolResult(result),
+        status: result.success ? 'done' : 'failed',
+        tone: toolTone(result.tool),
+      })
+    }
+  })
+
+  return updated
+}
+
+function migrateStoredMessages(
+  messages: ChatMessage[],
+  plan?: HealthPlan | null,
+  tools?: ToolCard[],
+  awaitingConfirmation?: boolean,
+) {
+  if (!plan || messages.some((message) => message.plan)) return messages
+  const index = messages.findLastIndex((message) => message.role === 'ai')
+  if (index < 0) return messages
+  return messages.map((message, messageIndex) =>
+    messageIndex === index
+      ? {
+          ...message,
+          plan,
+          tools: tools || buildReadyTools(plan),
+          awaitingConfirmation: awaitingConfirmation ?? plan.requiresConfirmation,
+        }
+      : message,
+  )
+}
+
+function getVoiceCommand(text: string, wakeArmed: boolean) {
+  const normalized = text.replace(/\s+/g, '')
+  const wakeMatch = normalized.match(/^(安安同学|安安|小安安|嘿安安|你好安安)[，。,.、!！]?/)
+  if (wakeMatch) {
+    return {
+      shouldProcess: true,
+      text: normalized.slice(wakeMatch[0].length).trim(),
+    }
+  }
+  return {
+    shouldProcess: wakeArmed,
+    text: wakeArmed ? text.trim() : '',
+  }
+}
+
+function getRms(input: Float32Array) {
+  let sum = 0
+  for (let i = 0; i < input.length; i += 1) sum += input[i] * input[i]
+  return Math.sqrt(sum / input.length)
+}
+
 function toolTone(tool: ToolName): ToolCard['tone'] {
   if (tool === 'send_feishu_message') return 'blue'
   if (tool === 'search_nearby_clinic' || tool === 'route_to_clinic') return 'green'
@@ -1120,6 +1384,24 @@ function buildPlanMessage(plan: HealthPlan) {
     : '我先把照护待办记下来。'
   return `我判断你现在的风险是${risk}。${plan.summary}\n\n我建议：${plan.todos.join('、')}。\n${confirm}`
 }
+
+function resampleFloat32Array(input: Float32Array, sourceRate: number, targetRate: number) {
+  if (sourceRate === targetRate) return input
+  const ratio = sourceRate / targetRate
+  const outputLength = Math.max(1, Math.round(input.length / ratio))
+  const output = new Float32Array(outputLength)
+
+  for (let i = 0; i < outputLength; i += 1) {
+    const sourceIndex = i * ratio
+    const leftIndex = Math.floor(sourceIndex)
+    const rightIndex = Math.min(leftIndex + 1, input.length - 1)
+    const weight = sourceIndex - leftIndex
+    output[i] = input[leftIndex] * (1 - weight) + input[rightIndex] * weight
+  }
+
+  return output
+}
+
 function floatTo16BitPcmBase64(float32Array: Float32Array) {
   const buffer = new ArrayBuffer(float32Array.length * 2)
   const view = new DataView(buffer)
