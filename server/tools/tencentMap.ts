@@ -18,6 +18,8 @@ export type RouteResult = {
   distanceMeters: number
   durationSeconds: number
   description: string
+  fromLocation: { lat: number; lng: number }
+  toLocation: { lat: number; lng: number }
 }
 
 function resolveKey(override?: string) {
@@ -206,6 +208,8 @@ export async function getRoute(params: {
       distanceMeters: distance,
       durationSeconds: duration,
       description: `${params.mode === 'walking' ? '步行' : '驾车'} ${distanceText}，${durationText}`,
+      fromLocation: from,
+      toLocation: to,
     }
   } catch (error) {
     throw normalizeAxiosError(error, '路线规划')

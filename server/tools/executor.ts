@@ -1,4 +1,8 @@
 import { randomUUID } from 'node:crypto'
+import { execFile } from 'node:child_process'
+import { mkdir, writeFile } from 'node:fs/promises'
+import path from 'node:path'
+import { promisify } from 'node:util'
 import { z } from 'zod'
 import { env } from '../config/env.js'
 import { sendMessageToUser } from '../feishu/client.js'
@@ -7,10 +11,13 @@ import {
   createTodoListSchema,
   notifyEmergencyContactSchema,
   routeToClinicSchema,
+  runMobileWorkflowSchema,
   searchNearbyClinicSchema,
   sendFeishuMessageSchema,
   type ToolName,
 } from './schemas.js'
+
+const execFileAsync = promisify(execFile)
 
 export type ToolExecutionResult = {
   id: string
@@ -171,6 +178,51 @@ export async function executeTool(name: string, rawArguments: unknown): Promise<
     }
   }
 
+  if (name === 'run_mobile_workflow') {
+    const args = runMobileWorkflowSchema.parse(rawArguments)
+    const flow = buildMaestroFlow(args.workflow)
+    await mkdir(env.MAESTRO_FLOW_DIR, { recursive: true })
+    const flowPath = path.join(env.MAESTRO_FLOW_DIR, `${args.workflow.intent}-${id}.yaml`)
+    await writeFile(flowPath, flow.yaml, 'utf8')
+
+    const dryRun = (args.dry_run ?? env.MAESTRO_DRY_RUN) || !env.MAESTRO_ENABLED
+    if (dryRun) {
+      return {
+        id,
+        tool: name,
+        success: true,
+        message: `已生成 Maestro 手机操作脚本，等待你开启执行配置后运行：${flow.title}`,
+        data: {
+          dryRun: true,
+          flowPath,
+          yaml: flow.yaml,
+          handoffRequiredAt: args.workflow.handoff_required_at,
+          steps: flow.steps,
+        },
+      }
+    }
+
+    const { stdout, stderr } = await execFileAsync(env.MAESTRO_CLI_PATH, ['test', flowPath], {
+      timeout: 180_000,
+      windowsHide: true,
+    })
+    return {
+      id,
+      tool: name,
+      success: true,
+      message: `Maestro 手机工作流已执行到安全交接点：${flow.title}`,
+      data: {
+        dryRun: false,
+        flowPath,
+        yaml: flow.yaml,
+        stdout,
+        stderr,
+        handoffRequiredAt: args.workflow.handoff_required_at,
+        steps: flow.steps,
+      },
+    }
+  }
+
   throw new Error(`Unknown tool: ${name}`)
 }
 
@@ -188,4 +240,79 @@ export function parseToolArguments(args: string | undefined) {
       },
     ])
   }
+}
+
+function buildMaestroFlow(workflow: z.infer<typeof runMobileWorkflowSchema>['workflow']) {
+  const appId = appIdFor(workflow.target_app)
+  const steps: MaestroStep[] =
+    workflow.intent === 'buy_medicine'
+      ? [
+          { launchApp: true },
+          { tapOn: '\u4e70\u836f' },
+          { tapOn: '\u641c\u7d22' },
+          { setClipboard: workflow.medicine_name || '\u611f\u5192\u836f' },
+          { pasteText: true },
+          { tapOn: workflow.medicine_name || '\u611f\u5192\u836f' },
+          { assertVisible: '\u652f\u4ed8' },
+        ]
+      : workflow.intent === 'book_ride'
+        ? [
+            { launchApp: true },
+            { tapOn: '\u4f60\u8981\u53bb\u54ea\u513f' },
+            { setClipboard: workflow.destination || '\u533b\u9662' },
+            { pasteText: true },
+            { tapOn: workflow.destination || '\u533b\u9662' },
+            { assertVisible: '\u786e\u8ba4\u547c\u53eb' },
+          ]
+        : workflow.intent === 'call_phone'
+          ? [
+              { launchApp: { clearState: true } },
+              { inputText: workflow.phone_number || '120' },
+              { tapOn: '\u8054\u901a' },
+              { assertVisible: workflow.phone_number || '120' },
+            ]
+          : [
+              { launchApp: true },
+              { assertVisible: workflow.goal },
+            ]
+
+  return {
+    title: workflow.goal,
+    steps,
+    yaml: toMaestroYaml(appId, workflow.goal, steps),
+  }
+}
+function appIdFor(targetApp: string) {
+  const appIds: Record<string, string> = {
+    meituan: 'com.sankuai.meituan',
+    didi: 'com.sdu.didi.psnger',
+    phone: 'com.android.contacts',
+    amap: 'com.autonavi.minimap',
+    other: 'com.android.settings',
+  }
+  return appIds[targetApp] || appIds.other
+}
+
+type MaestroStep = Record<string, string | boolean | Record<string, string | boolean>>
+
+function toMaestroYaml(appId: string, name: string, steps: MaestroStep[]) {
+  const lines = [`appId: ${appId}`, `name: ${escapeYamlValue(name)}`, '---']
+  for (const step of steps) {
+    const [command, value] = Object.entries(step)[0]
+    if (value === true) {
+      lines.push(`- ${command}`)
+    } else if (typeof value === 'object' && value) {
+      lines.push(`- ${command}:`)
+      for (const [key, nestedValue] of Object.entries(value)) {
+        lines.push(`    ${key}: ${typeof nestedValue === 'boolean' ? nestedValue : escapeYamlValue(String(nestedValue))}`)
+      }
+    } else {
+      lines.push(`- ${command}: ${escapeYamlValue(String(value))}`)
+    }
+  }
+  return `${lines.join('\n')}\n`
+}
+
+function escapeYamlValue(value: string) {
+  return JSON.stringify(value)
 }

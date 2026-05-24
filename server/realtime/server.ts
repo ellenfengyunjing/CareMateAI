@@ -4,6 +4,7 @@ import { env } from '../config/env.js'
 import { realtimeAgentInstructions } from '../agents/prompts.js'
 import { executeTool, parseToolArguments } from '../tools/executor.js'
 import { logEvent } from '../logging/logger.js'
+import { VolcengineAsrSession } from './volcengineAsr.js'
 
 type ClientMessage =
   | {
@@ -47,6 +48,11 @@ export function attachRealtimeServer(server: Server) {
   const wss = new WebSocketServer({ server, path: '/ws/realtime' })
 
   wss.on('connection', (client) => {
+    if (env.VOICE_PROVIDER === 'volcengine') {
+      attachVolcengineConnection(client)
+      return
+    }
+
     const context: ClientContext = {
       leaderName: 'Ellen Feng',
       emergencyPhone: '13800000000',
@@ -251,6 +257,107 @@ export function attachRealtimeServer(server: Server) {
   })
 }
 
+function attachVolcengineConnection(client: WebSocket) {
+  let asrSession: VolcengineAsrSession | null = null
+  let asrSessionPromise: Promise<VolcengineAsrSession> | null = null
+  let started = false
+
+  const sendClient = (payload: unknown) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(JSON.stringify(payload))
+    }
+  }
+
+  const startAsrSession = async () => {
+    if (asrSession) return asrSession
+    if (asrSessionPromise) return asrSessionPromise
+    if (!env.VOLCENGINE_ASR_APP_KEY) {
+      throw new Error('Volcengine ASR is not configured. Please fill VOLCENGINE_ASR_APP_KEY.')
+    }
+
+    const session = new VolcengineAsrSession(
+      {
+        endpoint: env.VOLCENGINE_ASR_ENDPOINT,
+        appKey: env.VOLCENGINE_ASR_APP_KEY,
+        resourceId: env.VOLCENGINE_ASR_RESOURCE_ID,
+        rate: 16000,
+        bits: 16,
+        channels: 1,
+        uid: 'test_user_001',
+      },
+      {
+        onStableText: (text) => {
+          if (text) sendClient({ type: 'transcript.partial', text })
+        },
+      },
+    )
+    asrSessionPromise = session
+      .connect()
+      .then(() => {
+        asrSession = session
+        return session
+      })
+      .catch((error) => {
+        asrSession = null
+        session.abort()
+        throw error
+      })
+      .finally(() => {
+        asrSessionPromise = null
+      })
+    return asrSessionPromise
+  }
+
+  client.on('message', async (data) => {
+    try {
+      const message = JSON.parse(data.toString()) as ClientMessage
+      await logEvent('client.event', { type: message.type, voiceProvider: 'volcengine' })
+
+      if (message.type === 'session.start') {
+        started = true
+        sendClient({ type: 'status', status: 'connected', provider: 'volcengine' })
+        return
+      }
+
+      if (!started) {
+        sendClient({ type: 'error', message: 'Voice session has not started yet.' })
+        return
+      }
+
+      if (message.type === 'audio.append') {
+        const session = await startAsrSession()
+        session.write(Buffer.from(message.audio, 'base64'))
+      }
+
+      if (message.type === 'audio.commit') {
+        const session = asrSession || (asrSessionPromise ? await asrSessionPromise : null)
+        asrSession = null
+        if (!session) return
+        const result = await session.finish()
+        const transcript = result.stableText || result.text
+        if (transcript) sendClient({ type: 'transcript.user', text: transcript })
+      }
+
+      if (message.type === 'text.send') {
+        sendClient({ type: 'transcript.user', text: message.text })
+      }
+
+      if (message.type === 'response.cancel') {
+        asrSession?.abort()
+        asrSession = null
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Volcengine voice failed'
+      sendClient({ type: 'error', message })
+      await logEvent('volcengine.error', { message })
+    }
+  })
+
+  client.on('close', () => {
+    asrSession?.abort()
+  })
+}
+
 function buildInstructions(context: ClientContext) {
   return `${realtimeAgentInstructions}
 
@@ -318,4 +425,3 @@ function summarizeRealtimeEvent(event: Record<string, unknown>) {
     error: event.error,
   }
 }
-

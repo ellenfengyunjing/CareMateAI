@@ -87,6 +87,23 @@ describe('executeTool', () => {
     expect(result.message).toMatch(/步行/)
   })
 
+  it('run_mobile_workflow generates a Maestro flow in dry run mode', async () => {
+    const result = await executeTool('run_mobile_workflow', {
+      workflow: {
+        intent: 'buy_medicine',
+        target_app: 'meituan',
+        goal: '打开美团买药并停在支付前',
+        medicine_name: '布洛芬',
+        handoff_required_at: 'payment',
+      },
+      dry_run: true,
+    })
+    expect(result.success).toBe(true)
+    expect(result.tool).toBe('run_mobile_workflow')
+    expect((result.data as { yaml: string }).yaml).toContain('com.sankuai.meituan')
+    expect((result.data as { yaml: string }).yaml).toContain('布洛芬')
+  })
+
   it('rejects malformed args via zod', async () => {
     await expect(
       executeTool('send_feishu_message', { receiver: '', message_text: 'x' }),

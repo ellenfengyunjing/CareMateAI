@@ -76,6 +76,8 @@ describe('tencentMap', () => {
     })
     const result = await getRoute({ from: '家', to: '社康', mode: 'walking', keyOverride: 'k' })
     expect(result.distanceMeters).toBe(1500)
+    expect(result.fromLocation).toEqual({ lat: 22.5, lng: 113.9 })
+    expect(result.toLocation).toEqual({ lat: 22.6, lng: 113.95 })
     expect(result.description).toMatch(/步行/)
     expect(result.description).toMatch(/1\.5/)
     const callArgs = mockedAxios.get.mock.calls[2]

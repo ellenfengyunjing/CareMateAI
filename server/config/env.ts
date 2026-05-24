@@ -23,6 +23,10 @@ const optionalUrl = z.preprocess(
 const envSchema = z.object({
   FEISHU_APP_ID: optionalNonEmptyString,
   FEISHU_APP_SECRET: optionalNonEmptyString,
+  VOICE_PROVIDER: z.enum(['openai', 'volcengine']).default('openai'),
+  VOLCENGINE_ASR_APP_KEY: optionalNonEmptyString,
+  VOLCENGINE_ASR_RESOURCE_ID: z.string().default('volc.seedasr.sauc.duration'),
+  VOLCENGINE_ASR_ENDPOINT: z.string().default('wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async'),
   OPENAI_API_KEY: z.string().min(1, 'OPENAI_API_KEY is required'),
   OPENAI_MODEL: z.string().default('gpt-5'),
   OPENAI_FALLBACK_MODELS: z.string().default('gpt-5.2,gpt-5.1,gpt-5'),
@@ -30,6 +34,10 @@ const envSchema = z.object({
   OPENAI_REALTIME_MODEL: z.string().default('gpt-realtime'),
   AGENT_LOCAL_FALLBACK: booleanEnv.default(false),
   FEISHU_MOCK: booleanEnv.default(false),
+  MAESTRO_ENABLED: booleanEnv.default(false),
+  MAESTRO_DRY_RUN: booleanEnv.default(true),
+  MAESTRO_CLI_PATH: z.string().default('maestro'),
+  MAESTRO_FLOW_DIR: z.string().default('data/maestro/flows'),
   TENCENT_MAP_KEY: optionalNonEmptyString,
   PORT: z.coerce.number().int().positive().default(8787),
 })
