@@ -50,12 +50,29 @@ export const routeToClinicSchema = z.object({
   tencent_key: z.string().optional(),
 })
 
+export const mobileWorkflowSchema = z.object({
+  intent: z.enum(['buy_medicine', 'book_ride', 'call_phone', 'open_app_task']),
+  target_app: z.enum(['meituan', 'didi', 'phone', 'amap', 'other']),
+  goal: z.string().min(1),
+  medicine_name: z.string().optional(),
+  destination: z.string().optional(),
+  from_address: z.string().optional(),
+  phone_number: z.string().optional(),
+  handoff_required_at: z.enum(['payment', 'place_order', 'call_confirm', 'ride_confirm', 'manual_review']).default('manual_review'),
+})
+
+export const runMobileWorkflowSchema = z.object({
+  workflow: mobileWorkflowSchema,
+  dry_run: z.boolean().optional(),
+})
+
 export type ToolName =
   | 'send_feishu_message'
   | 'notify_emergency_contact'
   | 'create_todo_list'
   | 'search_nearby_clinic'
   | 'route_to_clinic'
+  | 'run_mobile_workflow'
 
 export const realtimeTools = [
   {

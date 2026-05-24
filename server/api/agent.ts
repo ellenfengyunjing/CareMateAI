@@ -25,6 +25,18 @@ const planRequestSchema = z.object({
 
 const executeWorkflowSchema = z.object({
   plan: healthPlanSchema,
+  tools: z
+    .array(
+      z.enum([
+        'create_todo_list',
+        'send_feishu_message',
+        'notify_emergency_contact',
+        'search_nearby_clinic',
+        'route_to_clinic',
+        'run_mobile_workflow',
+      ]),
+    )
+    .optional(),
   settings: userSettingsSchema.partial().default({}),
 })
 
@@ -134,8 +146,13 @@ agentRouter.post('/execute', async (req, res, next) => {
       hasTencentMapKey: Boolean(settings.tencentMapKey),
     })
     const results: ToolExecutionResult[] = []
+    const requestedTools = parsed.data.tools?.length ? new Set(parsed.data.tools) : null
+    const shouldRun = (tool: ToolExecutionResult['tool']) =>
+      !requestedTools || requestedTools.has(tool)
+    const shouldRunRouteSearch =
+      shouldRun('search_nearby_clinic') || shouldRun('route_to_clinic')
 
-    if (plan.suggestedTools.includes('create_todo_list') || plan.todos.length > 0) {
+    if (shouldRun('create_todo_list') && (plan.suggestedTools.includes('create_todo_list') || plan.todos.length > 0)) {
       results.push(
         await safeExecuteTool('create_todo_list', {
           todos: plan.todos.length ? plan.todos : ['先休息观察身体状态'],
@@ -149,7 +166,7 @@ agentRouter.post('/execute', async (req, res, next) => {
       )
     }
 
-    if (plan.suggestedTools.includes('send_feishu_message')) {
+    if (shouldRun('send_feishu_message') && plan.suggestedTools.includes('send_feishu_message')) {
       if (!settings.autoMessage) {
         results.push(failedResult('send_feishu_message', '自动发消息权限未开启，请先在设置页打开'))
       } else if (!settings.leaderName.trim()) {
@@ -172,7 +189,7 @@ agentRouter.post('/execute', async (req, res, next) => {
       }
     }
 
-    if (plan.suggestedTools.includes('search_nearby_clinic')) {
+    if (shouldRunRouteSearch && plan.suggestedTools.includes('search_nearby_clinic')) {
       if (!settings.autoRide) {
         results.push(failedResult('search_nearby_clinic', '自动路线规划权限未开启，请先在设置页打开'))
       } else if (!settings.homeAddress.trim()) {
@@ -189,7 +206,10 @@ agentRouter.post('/execute', async (req, res, next) => {
       }
     }
 
-    if (plan.suggestedTools.includes('route_to_clinic') || plan.suggestedTools.includes('search_nearby_clinic')) {
+    if (
+      shouldRun('route_to_clinic') &&
+      (plan.suggestedTools.includes('route_to_clinic') || plan.suggestedTools.includes('search_nearby_clinic'))
+    ) {
       if (!settings.autoRide) {
         results.push(failedResult('route_to_clinic', '自动路线规划权限未开启，请先在设置页打开'))
       } else {
@@ -206,7 +226,7 @@ agentRouter.post('/execute', async (req, res, next) => {
       }
     }
 
-    if (plan.suggestedTools.includes('notify_emergency_contact') || plan.intent === 'emergency') {
+    if (shouldRun('notify_emergency_contact') && (plan.suggestedTools.includes('notify_emergency_contact') || plan.intent === 'emergency')) {
       if (!settings.autoMessage) {
         results.push(failedResult('notify_emergency_contact', '自动发消息权限未开启，请先在设置页打开'))
       } else {
@@ -227,6 +247,28 @@ agentRouter.post('/execute', async (req, res, next) => {
             }),
           )
         }
+      }
+    }
+
+    if (shouldRun('run_mobile_workflow') && plan.suggestedTools.includes('run_mobile_workflow')) {
+      if (!plan.mobileWorkflow) {
+        results.push(failedResult('run_mobile_workflow', '缺少手机自动化工作流参数'))
+      } else {
+        const routeResult = results.find((result) => result.tool === 'route_to_clinic')
+        const selectedClinic = (routeResult?.data as { selectedClinic?: { name?: string; address?: string } } | undefined)
+          ?.selectedClinic
+        results.push(
+          await safeExecuteTool('run_mobile_workflow', {
+            workflow: {
+              ...plan.mobileWorkflow,
+              from_address: plan.mobileWorkflow.from_address || settings.homeAddress || undefined,
+              destination:
+                plan.mobileWorkflow.intent === 'book_ride'
+                  ? selectedClinic?.address || selectedClinic?.name || plan.mobileWorkflow.destination
+                  : plan.mobileWorkflow.destination,
+            },
+          }),
+        )
       }
     }
 

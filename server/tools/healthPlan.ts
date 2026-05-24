@@ -14,8 +14,22 @@ export const healthPlanSchema = z.object({
       'notify_emergency_contact',
       'search_nearby_clinic',
       'route_to_clinic',
+      'run_mobile_workflow',
     ]),
   ),
+  mobileWorkflow: z
+    .object({
+      intent: z.enum(['buy_medicine', 'book_ride', 'call_phone', 'open_app_task']),
+      target_app: z.enum(['meituan', 'didi', 'phone', 'amap', 'other']),
+      goal: z.string(),
+      medicine_name: z.string().optional(),
+      destination: z.string().optional(),
+      from_address: z.string().optional(),
+      phone_number: z.string().optional(),
+      handoff_required_at: z.enum(['payment', 'place_order', 'call_confirm', 'ride_confirm', 'manual_review']).default('manual_review'),
+    })
+    .nullable()
+    .optional(),
   assistantMessage: z.string(),
   leaveMessageText: z.string().nullable(),
 })

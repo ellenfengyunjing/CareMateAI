@@ -34,6 +34,10 @@ const envSchema = z.object({
   OPENAI_REALTIME_MODEL: z.string().default('gpt-realtime'),
   AGENT_LOCAL_FALLBACK: booleanEnv.default(false),
   FEISHU_MOCK: booleanEnv.default(false),
+  MAESTRO_ENABLED: booleanEnv.default(false),
+  MAESTRO_DRY_RUN: booleanEnv.default(true),
+  MAESTRO_CLI_PATH: z.string().default('maestro'),
+  MAESTRO_FLOW_DIR: z.string().default('data/maestro/flows'),
   TENCENT_MAP_KEY: optionalNonEmptyString,
   PORT: z.coerce.number().int().positive().default(8787),
 })

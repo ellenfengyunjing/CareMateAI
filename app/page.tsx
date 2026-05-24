@@ -46,6 +46,7 @@ type ToolName =
   | 'notify_emergency_contact'
   | 'search_nearby_clinic'
   | 'route_to_clinic'
+  | 'run_mobile_workflow'
 
 type HealthPlan = {
   intent: 'health_check' | 'leave_request' | 'emergency' | 'daily_help'
@@ -55,6 +56,16 @@ type HealthPlan = {
   recommendedActions: string[]
   requiresConfirmation: boolean
   suggestedTools: ToolName[]
+  mobileWorkflow?: {
+    intent: 'buy_medicine' | 'book_ride' | 'call_phone' | 'open_app_task'
+    target_app: 'meituan' | 'didi' | 'phone' | 'amap' | 'other'
+    goal: string
+    medicine_name?: string
+    destination?: string
+    from_address?: string
+    phone_number?: string
+    handoff_required_at: 'payment' | 'place_order' | 'call_confirm' | 'ride_confirm' | 'manual_review'
+  } | null
   assistantMessage: string
   leaveMessageText: string | null
 }
@@ -152,7 +163,6 @@ export default function Home() {
   const currentAiMessageIdRef = useRef<string | null>(null)
   const voiceReplyEnabledRef = useRef(false)
   const longListeningRef = useRef(false)
-  const wakeArmedRef = useRef(false)
   const voiceHeardSpeechRef = useRef(false)
   const voiceSilenceTimerRef = useRef<number | null>(null)
   const voiceRestartTimerRef = useRef<number | null>(null)
@@ -247,6 +257,7 @@ export default function Home() {
   const addPlanMessage = (text: string, nextPlan: HealthPlan) => {
     const id = crypto.randomUUID()
     const nextTools = buildReadyTools(nextPlan)
+    const shouldAwaitConfirmation = nextTools.some((tool) => tool.status === 'ready')
     setMessages((current) => [
       ...current,
       {
@@ -255,12 +266,12 @@ export default function Home() {
         text,
         plan: nextPlan,
         tools: nextTools,
-        awaitingConfirmation: nextPlan.requiresConfirmation,
+        awaitingConfirmation: shouldAwaitConfirmation,
       },
     ])
     setPlan(nextPlan)
     setTools(nextTools)
-    setAwaitingConfirmation(nextPlan.requiresConfirmation)
+    setAwaitingConfirmation(shouldAwaitConfirmation)
     setActivePlanMessageId(id)
     return id
   }
@@ -308,7 +319,7 @@ export default function Home() {
 
   // PLACEHOLDER_HOME_BODY removed
   const connectRealtime = () => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
+    if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) return
     const ws = new WebSocket(`ws://${window.location.hostname}:8787/ws/realtime`)
     wsRef.current = ws
 
@@ -355,6 +366,12 @@ export default function Home() {
       if (data.type === 'error') {
         addMessage('system', '实时语音暂时连不上，可以直接用下方文字框跟我聊。')
       }
+    }
+    ws.onclose = () => {
+      if (wsRef.current === ws) wsRef.current = null
+    }
+    ws.onerror = () => {
+      if (wsRef.current === ws) wsRef.current = null
     }
   }
 
@@ -426,7 +443,9 @@ export default function Home() {
     const shouldCommit = options.commit ?? true
     if (voiceSilenceTimerRef.current) window.clearTimeout(voiceSilenceTimerRef.current)
     voiceSilenceTimerRef.current = null
-    if (shouldCommit && voiceHeardSpeechRef.current) wsRef.current?.send(JSON.stringify({ type: 'audio.commit' }))
+    if (shouldCommit && voiceHeardSpeechRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'audio.commit' }))
+    }
     processorRef.current?.disconnect()
     sourceRef.current?.disconnect()
     silentGainRef.current?.disconnect()
@@ -456,23 +475,6 @@ export default function Home() {
       addMessage('user', normalized)
       await executePlan(pendingPlan, pendingMessage?.id || activePlanMessageId)
       return
-    }
-
-    if (voiceReplyEnabledRef.current) {
-      const voiceCommand = getVoiceCommand(normalized, wakeArmedRef.current)
-      if (!voiceCommand.shouldProcess) {
-        addMessage('system', '我听到了。需要我处理时，请先叫“安安”或“安安同学”。')
-        return
-      }
-      if (!voiceCommand.text) {
-        wakeArmedRef.current = true
-        const reply = '我在，你继续说。'
-        addMessage('ai', reply)
-        speakAssistantText(reply)
-        return
-      }
-      wakeArmedRef.current = false
-      normalized = voiceCommand.text
     }
 
     if (
@@ -507,7 +509,7 @@ export default function Home() {
         addMessage('system', `安安暂时不在线：${err.message || response.statusText}`)
         return
       }
-      const data = (await response.json()) as
+      const data = (await readJsonResponse(response)) as
         | { kind: 'message'; text: string }
         | { kind: 'plan'; plan: HealthPlan; assistantMessage: string }
       if (data.kind === 'message') {
@@ -517,6 +519,16 @@ export default function Home() {
       } else if (data.kind === 'plan' && data.plan) {
         const nextPlan = data.plan
         const reply = nextPlan.assistantMessage || buildPlanMessage(nextPlan)
+        const nextTools = buildReadyTools(nextPlan)
+        if (!nextTools.length) {
+          addMessage('ai', reply)
+          setPlan(null)
+          setTools([])
+          setAwaitingConfirmation(false)
+          setActivePlanMessageId(null)
+          speakAssistantText(reply)
+          return
+        }
         const planMessageId = addPlanMessage(reply, nextPlan)
         speakAssistantText(reply)
         if (!nextPlan.requiresConfirmation) {
@@ -530,75 +542,69 @@ export default function Home() {
     }
   }
 
-  const executePlan = async (targetPlan: HealthPlan, messageId = activePlanMessageId) => {
-    setAwaitingConfirmation(false)
-    setTools((current) => current.map((tool) => ({ ...tool, status: 'running' })))
+  const executePlan = async (targetPlan: HealthPlan, messageId = activePlanMessageId, selectedTools?: ToolName[]) => {
+    const selected = selectedTools?.length ? new Set(selectedTools) : null
+    const markRunning = (tool: ToolCard): ToolCard =>
+      !selected || selected.has(tool.name) ? { ...tool, status: 'running' } : tool
+    const markFailed = (tool: ToolCard, detail?: string): ToolCard =>
+      !selected || selected.has(tool.name) ? { ...tool, status: 'failed', detail: detail || tool.detail } : tool
+    const targetMessage = messages.find((message) => message.id === messageId)
+    const hasRemainingReadyTools =
+      selected && Boolean(targetMessage?.tools?.some((tool) => tool.status === 'ready' && !selected.has(tool.name)))
+
+    setAwaitingConfirmation(Boolean(hasRemainingReadyTools))
+    setTools((current) => current.map(markRunning))
     updatePlanMessage(messageId, (message) => ({
       ...message,
-      awaitingConfirmation: false,
-      tools: (message.tools || []).map((tool) => ({ ...tool, status: 'running' })),
+      awaitingConfirmation: selected
+        ? Boolean((message.tools || []).some((tool) => tool.status === 'ready' && !selected.has(tool.name)))
+        : false,
+      tools: (message.tools || []).map(markRunning),
     }))
-    addMessage('ai', '好的，我现在开始执行。你先坐下休息，手机这边我来处理。')
 
     try {
       const response = await fetch('/api/agent/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan: targetPlan, settings }),
+        body: JSON.stringify({ plan: targetPlan, settings, tools: selectedTools }),
       })
-      const data = (await response.json()) as {
+      const data = (await readJsonResponse(response)) as {
         success?: boolean
         message?: string
         results?: Array<ToolResult>
       }
       if (!response.ok) {
-        addMessage('system', `执行失败：${data.message || response.statusText}`)
-        setTools((current) =>
-          current.map((tool) => ({ ...tool, status: 'failed', detail: data.message || '执行失败' })),
-        )
+        const detail = data.message || response.statusText
+        addMessage('system', '\u6267\u884c\u5931\u8d25\uff1a' + detail)
+        setTools((current) => current.map((tool) => markFailed(tool, detail)))
+        updatePlanMessage(messageId, (message) => ({
+          ...message,
+          tools: (message.tools || []).map((tool) => markFailed(tool, detail)),
+        }))
         return
       }
       const results = data.results || []
-      setTools((current) => {
-        const used = new Set<string>()
-        const hasRouteCard = current.some((tool) => tool.name === 'route_to_clinic')
-        const hasRouteResult = results.some((result) => result.tool === 'route_to_clinic')
-        const updated = current.map((tool) => {
-          const matched = findResultForTool(tool, results, used)
-          if (matched) used.add(matched.tool)
-          return matched
-            ? {
-                ...tool,
-                status: matched.success ? ('done' as const) : ('failed' as const),
-                detail: formatToolResult(matched),
-              }
-            : tool
-        })
-        results.forEach((r) => {
-          if (r.tool === 'search_nearby_clinic' && (hasRouteCard || hasRouteResult)) return
-          if (!current.some((t) => t.name === r.tool)) {
-            updated.push({
-              id: crypto.randomUUID(),
-              name: r.tool,
-              detail: formatToolResult(r),
-              status: r.success ? 'done' : 'failed',
-              tone: toolTone(r.tool),
-            })
-          }
-        })
-        return updated
+      setTools((current) => applyToolResults(current, results))
+      updatePlanMessage(messageId, (message) => {
+        const nextTools = applyToolResults(message.tools || [], results)
+        return {
+          ...message,
+          awaitingConfirmation: nextTools.some((tool) => tool.status === 'ready'),
+          tools: nextTools,
+        }
       })
-      updatePlanMessage(messageId, (message) => ({
-        ...message,
-        tools: applyToolResults(message.tools || [], results),
-      }))
       const okCount = results.filter((r) => r.success).length
       const summary = buildExecutionSummary(results, okCount)
       addMessage('ai', summary)
       speakAssistantText(summary)
     } catch (error) {
-      addMessage('system', `执行异常：${error instanceof Error ? error.message : '请稍后再试'}`)
-      setTools((current) => current.map((tool) => ({ ...tool, status: 'failed' })))
+      const detail = error instanceof Error ? error.message : '\u8bf7\u7a0d\u540e\u518d\u8bd5'
+      addMessage('system', '\u6267\u884c\u5f02\u5e38\uff1a' + detail)
+      setTools((current) => current.map((tool) => markFailed(tool)))
+      updatePlanMessage(messageId, (message) => ({
+        ...message,
+        tools: (message.tools || []).map((tool) => markFailed(tool)),
+      }))
     }
   }
 
@@ -620,9 +626,9 @@ export default function Home() {
             voiceReplyEnabledRef.current = false
             void handleUserText(inputText)
           }}
-          onConfirm={(targetPlan, messageId) => {
+          onConfirm={(targetPlan, messageId, selectedTools) => {
             const nextPlan = targetPlan || plan
-            if (nextPlan) void executePlan(nextPlan, messageId || activePlanMessageId)
+            if (nextPlan) void executePlan(nextPlan, messageId || activePlanMessageId, selectedTools)
           }}
           onClear={clearChat}
           hasPendingTools={Boolean(plan && tools.some((tool) => tool.status === 'ready'))}
@@ -648,7 +654,7 @@ function AssistantPage(props: {
   onInputChange: (text: string) => void
   onVoice: () => void
   onSend: () => void
-  onConfirm: (plan?: HealthPlan, messageId?: string) => void
+  onConfirm: (plan?: HealthPlan, messageId?: string, selectedTools?: ToolName[]) => void
   onClear: () => void
   hasPendingTools: boolean
 }) {
@@ -717,14 +723,23 @@ function AssistantPage(props: {
                   <ToolActionCard
                     tool={tool}
                     key={tool.id}
-                    onConfirm={() => props.onConfirm(message.plan || undefined, message.id)}
+                    onConfirm={() => props.onConfirm(message.plan || undefined, message.id, [tool.name])}
                   />
                 ))}
               </div>
             )}
 
             {(message.awaitingConfirmation || message.tools?.some((tool) => tool.status === 'ready')) && message.plan && (
-              <button className="confirm-card" onClick={() => props.onConfirm(message.plan || undefined, message.id)}>
+              <button
+                className="confirm-card"
+                onClick={() =>
+                  props.onConfirm(
+                    message.plan || undefined,
+                    message.id,
+                    message.tools?.filter((tool) => tool.status === 'ready').map((tool) => tool.name),
+                  )
+                }
+              >
                 <ShieldCheck size={18} />
                 <span>确认执行这些安排</span>
               </button>
@@ -790,7 +805,9 @@ function ToolActionCard({ tool, onConfirm }: { tool: ToolCard; onConfirm: () => 
       ? BriefcaseBusiness
       : tool.name === 'search_nearby_clinic' || tool.name === 'route_to_clinic'
         ? MapPinned
-        : tool.name === 'notify_emergency_contact'
+        : tool.name === 'run_mobile_workflow'
+          ? Phone
+          : tool.name === 'notify_emergency_contact'
           ? Bell
           : CheckCircle2
   return (
@@ -802,7 +819,7 @@ function ToolActionCard({ tool, onConfirm }: { tool: ToolCard; onConfirm: () => 
         <h4>{toolLabel(tool.name)}</h4>
         <p>{tool.detail}</p>
         <span className="status-pill">{toolStatusLabel(tool.status)}</span>
-        {tool.status === 'ready' && tool.name !== 'create_todo_list' && (
+        {tool.status === 'ready' && (
           <button className="tool-confirm-btn" onClick={onConfirm} type="button">
             确认执行
           </button>
@@ -1246,6 +1263,11 @@ function formatToolResult(result: ToolResult) {
     if (data?.selectedClinic?.name && data?.description) return `${data.selectedClinic.name}：${data.description}`
     if (data?.description) return data.description
   }
+  if (result.tool === 'run_mobile_workflow') {
+    const mobile = result.data as { dryRun?: boolean; flowPath?: string; handoffRequiredAt?: string } | undefined
+    if (mobile?.dryRun) return `已生成 Maestro 脚本：${mobile.flowPath || '等待配置后执行'}`
+    return `${result.message}${mobile?.handoffRequiredAt ? `，交接点：${mobile.handoffRequiredAt}` : ''}`
+  }
   return result.message
 }
 
@@ -1256,9 +1278,9 @@ function buildReadyTools(plan: HealthPlan): ToolCard[] {
     requested.add('route_to_clinic')
   }
   const ordered: ToolName[] = [
-    'create_todo_list',
     'send_feishu_message',
     'route_to_clinic',
+    'run_mobile_workflow',
     'notify_emergency_contact',
   ]
   return ordered.filter((tool) => requested.has(tool)).map<ToolCard>((tool) => ({
@@ -1270,6 +1292,8 @@ function buildReadyTools(plan: HealthPlan): ToolCard[] {
         ? '等待记录照护待办'
         : tool === 'route_to_clinic'
           ? '等待搜索附近医院并规划推荐路线'
+          : tool === 'run_mobile_workflow'
+            ? '等待生成 Maestro 手机操作流程'
           : '等待你确认后执行',
     tone: toolTone(tool),
   }))
@@ -1328,21 +1352,6 @@ function migrateStoredMessages(
   )
 }
 
-function getVoiceCommand(text: string, wakeArmed: boolean) {
-  const normalized = text.replace(/\s+/g, '')
-  const wakeMatch = normalized.match(/^(安安同学|安安|小安安|嘿安安|你好安安)[，。,.、!！]?/)
-  if (wakeMatch) {
-    return {
-      shouldProcess: true,
-      text: normalized.slice(wakeMatch[0].length).trim(),
-    }
-  }
-  return {
-    shouldProcess: wakeArmed,
-    text: wakeArmed ? text.trim() : '',
-  }
-}
-
 function getRms(input: Float32Array) {
   let sum = 0
   for (let i = 0; i < input.length; i += 1) sum += input[i] * input[i]
@@ -1352,6 +1361,7 @@ function getRms(input: Float32Array) {
 function toolTone(tool: ToolName): ToolCard['tone'] {
   if (tool === 'send_feishu_message') return 'blue'
   if (tool === 'search_nearby_clinic' || tool === 'route_to_clinic') return 'green'
+  if (tool === 'run_mobile_workflow') return 'yellow'
   if (tool === 'notify_emergency_contact') return 'pink'
   return 'orange'
 }
@@ -1372,6 +1382,7 @@ function toolLabel(name: ToolName) {
     send_feishu_message: '飞书通知：领导',
     search_nearby_clinic: '腾讯地图：附近医院',
     route_to_clinic: '去医院推荐路线',
+    run_mobile_workflow: '手机 App 自动操作',
     notify_emergency_contact: '飞书通知：紧急联系人',
   }
   return labels[name]
@@ -1383,6 +1394,19 @@ function buildPlanMessage(plan: HealthPlan) {
     ? '如果你确认，我会继续执行这些事项。你可以直接说"确认执行"。'
     : '我先把照护待办记下来。'
   return `我判断你现在的风险是${risk}。${plan.summary}\n\n我建议：${plan.todos.join('、')}。\n${confirm}`
+}
+
+async function readJsonResponse(response: Response) {
+  const text = await response.text()
+  if (!text) return {}
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    return {
+      success: false,
+      message: response.ok ? text : `${response.status} ${response.statusText}: ${text.slice(0, 120)}`,
+    }
+  }
 }
 
 function resampleFloat32Array(input: Float32Array, sourceRate: number, targetRate: number) {
